@@ -555,6 +555,74 @@ pub async fn a_failed_attempt_is_tried_again<B: Backend>(b: &B) {
     );
 }
 
+pub async fn a_result_whose_lease_ran_out_meanwhile_is_refused<B: Backend>(b: &B) {
+    let w = World::new(b);
+    let (e, flaky) = w.flaky("a");
+    let (_, p) = fulfilling(&e).await;
+    let late = e.claim_task("pack", "w1", 10_000).await.unwrap().unwrap();
+    // While w1 reports, its lease runs out and w2 takes the task.
+    let (other, clock) = (w.engine("b"), w.clock.clone());
+    flaky.race_on(
+        move |u| records_step(u, "pack"),
+        Box::pin(async move {
+            clock.advance(10_000);
+            other
+                .claim_task("pack", "w2", 10_000)
+                .await
+                .unwrap()
+                .unwrap();
+        }),
+    );
+    assert_eq!(
+        refused(e.finish_task(&late, Ok(json!("w1's")), "w1").await),
+        "lease_lost"
+    );
+    let taken = e.claim_task("pack", "w3", 10_000).await.unwrap();
+    assert!(taken.is_none(), "w2 holds it");
+    assert_eq!(finished(&e, p).await, None);
+}
+
+pub async fn a_wake_while_a_runner_holds_the_process_is_not_lost<B: Backend>(b: &B) {
+    let w = World::new(b);
+    let (a, flaky) = w.flaky("a");
+    let p = id();
+    a.start("label", p, json!({ "order": id() }), ann())
+        .await
+        .unwrap();
+    a.tick().await.unwrap();
+    assert_eq!(
+        a.process(p).await.unwrap().pending.map(|(k, _)| k),
+        Some("pack".into())
+    );
+    // a holds the process again and finds it waiting; just before it lets
+    // go, a worker finishes the task it waits for.
+    let worker = w.engine("worker");
+    flaky.race_on(
+        |u| {
+            u.appends.iter().all(|a| a.events.is_empty())
+                && u.work
+                    .iter()
+                    .any(|c| matches!(c, factum_core::WorkChange::Release { .. }))
+        },
+        Box::pin(async move {
+            let task = worker
+                .claim_task("pack", "w", 10_000)
+                .await
+                .unwrap()
+                .unwrap();
+            worker
+                .finish_task(&task, Ok(json!("packed")), "w")
+                .await
+                .unwrap();
+        }),
+    );
+    a.settle().await.unwrap();
+    assert_eq!(
+        finished(&a, p).await,
+        Some(Finished::Completed(json!("packed")))
+    );
+}
+
 pub async fn a_task_whose_lease_ran_out_is_taken_over<B: Backend>(b: &B) {
     let w = World::new(b);
     let e = w.engine("a");
@@ -905,13 +973,16 @@ pub async fn snapshots_change_no_answer<B: Backend>(b: &B) {
     );
     assert_eq!(
         rebuilt.state(&stream).await.unwrap()["total"],
-        total,
-        "folded from the first event"
+        2 * total,
+        "other code folds from the first event, not from the snapshot"
     );
     e.submit(sub("counter.add", json!({ "counter": c, "n": 1 })))
         .await
         .unwrap();
-    assert_eq!(rebuilt.state(&stream).await.unwrap()["total"], total + 1);
+    assert_eq!(
+        rebuilt.state(&stream).await.unwrap()["total"],
+        2 * (total + 1)
+    );
     assert_eq!(e.state(&stream).await.unwrap()["total"], total + 1);
 }
 

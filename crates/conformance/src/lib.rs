@@ -158,6 +158,8 @@ macro_rules! suite {
             a_worker_claims_heartbeats_and_finishes_a_task,
             a_failed_attempt_is_tried_again,
             a_task_whose_lease_ran_out_is_taken_over,
+            a_result_whose_lease_ran_out_meanwhile_is_refused,
+            a_wake_while_a_runner_holds_the_process_is_not_lost,
             an_at_most_once_task_whose_lease_ran_out_ends_unknown,
             a_heartbeat_never_holds_a_task_past_its_timeout,
             tasks_with_one_ordering_key_run_one_at_a_time_paced,

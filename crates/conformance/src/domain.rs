@@ -299,8 +299,10 @@ impl Aggregate for CountersRebuilt {
     const NAME: &'static str = "counter";
     type State = Counter;
     type Event = CounterEvent;
-    fn evolve(state: &mut Counter, event: CounterEvent) {
-        Counters::evolve(state, event);
+    /// Counts every addition twice: new code whose answers differ from the
+    /// old code's, so a snapshot the old code kept would show.
+    fn evolve(state: &mut Counter, CounterEvent::Added { n }: CounterEvent) {
+        state.total += 2 * n;
     }
     fn code() -> &'static str {
         "rebuilt"
@@ -476,6 +478,28 @@ fn task_outcome(p: &Progress, queue: impl FnOnce() -> Next, key: &str) -> Next {
     }
 }
 
+/// Counts the order, then has it packed: a command step, then a task.
+pub struct LabelProcess;
+
+impl Process for LabelProcess {
+    const NAME: &'static str = "label";
+    type Input = OrderRef;
+    fn next(i: &OrderRef, p: &Progress) -> Next {
+        match p.outcome("count") {
+            None => Next::run(
+                "count",
+                "counter.add",
+                json!({ "counter": i.order, "n": 1 }),
+            ),
+            Some(_) => task_outcome(
+                p,
+                || Next::queue("pack", "pack", json!({ "order": i.order })),
+                "pack",
+            ),
+        }
+    }
+}
+
 pub struct PickupProcess;
 
 /// How long a paid order waits to be picked up.
@@ -644,6 +668,7 @@ pub fn shop(
         .process::<PrintProcess>()
         .process::<DeliveryProcess>()
         .process::<PickupProcess>()
+        .process::<LabelProcess>()
         .action(
             "payment.charge",
             ActionPolicy {
