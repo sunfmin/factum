@@ -194,10 +194,11 @@ impl<S: Store> Engine<S> {
                         ..Unit::default()
                     };
                     match self.store.commit(unit).await {
-                        Ok(_) | Err(StoreError::KeyTaken(_)) => {}
+                        Ok(_) => return Err(Error::Rejected(r)),
+                        // Another writer answered the key first: answer what it holds.
+                        Err(StoreError::KeyTaken(_)) => continue,
                         Err(e) => return Err(e.into()),
                     }
-                    return Err(Error::Rejected(r));
                 }
                 Err(e) => return Err(e),
             };
