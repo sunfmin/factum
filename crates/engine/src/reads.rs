@@ -55,6 +55,7 @@ impl<S: Store> Engine<S> {
                 format!("{} has no column {c}", query.table),
             ));
         }
+        self.checkpoint_of(projection, p.version(), &tables).await?;
         Ok(self.store.query(projection, query).await?)
     }
 

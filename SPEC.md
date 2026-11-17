@@ -25,8 +25,9 @@ approval and an entry here.
 | 6 | **Action** | A call to another system, requested by a step through an **outbox**: the request and its delivery row commit together. Delivered at least once under the step's key, or **at most once**, in which case a call whose answer was lost ends `Unknown` for `next` to reconcile. Each action declares its retry schedule (attempts, backoff, factor, cap, jitter) and timeout. |
 | 7 | **Task** | Long work a step queues and a **worker** pulls: claim under a lease, heartbeat to keep it (never past the type's timeout), result or failure. Declared attempts and backoff; may be done at most once; may be cancelled; may carry an **ordering key** (one at a time per key, in order, paced). |
 | 8 | **Schedule** | A decide asks for a command later by returning a `CommandScheduled`; it runs once its time comes, under `UUIDv5(event, "scheduled")`, and its outcome, a refusal included, is recorded and not retried. A **recurring** command runs once per period, under a key derived from its name and the period. |
-| 9 | **Projection** | Pure code that turns each event into row changes (put, merge, delete) of its own tables. It reads only **final** events in commit order; rows and checkpoint move together. A new version rebuilds from the whole log. An event it fails on becomes a **dead letter**: skipped, or (declared `stop`) held there until a new version rebuilds. |
+| 9 | **Projection** | Pure code that turns each event into row changes (put, merge, delete) of the tables it **declares**: rows are JSON objects under a key; declared columns are what **queries** filter (`= <> < <= > >=`) and order by, and declared indexes make them fast. It reads only **final** events in commit order; rows and checkpoint move together. A new version, or any change to its tables, rebuilds it from the whole log. An event it fails on, or that writes an undeclared table, becomes a **dead letter**: skipped, or (declared `stop`) held there. A dead letter is **retried** with the code running now; a projection stopped at it then goes on. |
 | 10 | **Snapshot** | A stream's state at a version, kept by the code that folded it and read only by that code. Derived: no answer depends on it. |
+| 11 | **Sample** | A run of a process as some version left it — input, progress — and what `next` answered for it then. Taken from a running process, kept beside the code, and checked against a new version: a `next` that answers otherwise would make old runs take a step twice or wait forever. |
 
 `by` (who applies a command) is factum's own for the work it originates —
 `Process(stream)`, `Schedule(id)`, `Recurring(name)`, `Action(name)`,
@@ -42,6 +43,8 @@ kind in one table beside the log. Every row is implied by an event
 committed with it (one pure function, `effects`), so the rows never say
 what the log does not. Every lease in factum is a claim on such a row.
 
+**Values compare as SQLite compares them**, in every store: null before numbers before text; numbers by value; booleans as 0 and 1; objects and arrays as their JSON text; a comparison with null never holds. Results are ordered as asked, then by key.
+
 **Not supported: branches.** The log has one line. A program that wants to
 rehearse on a copy of the log builds it on top of factum (e.g. a second
 store seeded from the first).
@@ -52,8 +55,8 @@ store seeded from the first).
 |---|---|---|
 | `factum-core` | The pure half: events, streams, keys, the typed and erased traits a program implements (aggregate, command, process, projection), process folding and `advance`, work rows and `effects`, retry arithmetic. No IO, no async, no clock. | 5,000 |
 | `factum-store` | The `Store` trait (§3) and the in-memory store, the reference every other store is held to. | 3,000 |
-| `factum` | The engine: `submit`, `plan`, `state`, `history`, `start`, `process`; `tick` / `settle` (dispatch, advance, deliver, run due, end waits, project); the worker API (`claim_task`, `heartbeat`, `finish_task`, `cancel_task`); the clock. Generic over `Store`. | 5,000 |
-| `factum-sqlite` | `Store` on SQLite: one file, writers take turns (`BEGIN IMMEDIATE`). | 3,000 |
+| `factum` | The engine: `submit`, `plan`, `state`, `history`, `start`, `process`; `tick` / `settle` (dispatch, advance, deliver, run due, end waits, project); the worker API (`claim_task`, `heartbeat`, `finish_task`, `cancel_task`); `query`, `retry_dead_letter`; `sample` and `Model::check_samples`; the clock. Generic over `Store`; async, on no particular runtime; its futures are `Send`. | 5,000 |
+| `factum-sqlite` | `Store` on SQLite: one file, writers take turns (`BEGIN IMMEDIATE`); each handle's connection on a thread of its own, so no call blocks the caller's runtime; each projection table a table of its own, declared columns generated from the row and indexed. | 3,000 |
 | `factum-postgres` | `Store` on Postgres, extracted from bizkernel, many writers. Not built yet. | 3,000 |
 | `factum-conformance` | The scenarios every store must pass (§4). Not published. | — |
 
@@ -81,7 +84,10 @@ short transaction; none holds a lock while the caller works.
 - A wake that comes while a row is claimed survives the claim's release.
 - `snapshot` / `keep_snapshot`; `checkpoint` / `reset_projection` /
   `apply_projection` (refused unless the checkpoint is where the batch
-  began); `rows`, `row`, `dead_letters`.
+  began); `resolve_dead_letter` (a retried dead letter's rows, and a
+  stopped projection moved past it); `query`, `rows`, `row`, `dead_letters`.
+  A checkpoint keeps the tables it was built with; `reset_projection` drops
+  a projection's rows and dead letters and makes its declared tables anew.
 
 Each store implements these as its backend allows: SQLite's single writer
 makes commit order the sequence order, and Postgres will need an
@@ -97,15 +103,18 @@ over a small shop domain (orders, counters, checkout with a payment
 stand-in, receipts, packing, deliveries, pickups, an order list), and
 `factum_conformance::suite!(backend)` runs all of them on a store.
 
-To make a runner die between two writes, or lose a race, a scenario wraps
-its store in `Flaky`: the next matching commit fails, or another runner
-writes first. Time moves only when a scenario moves it.
+Scenarios run on a multi-threaded runtime; those about runners in parallel
+spawn them as tasks of their own. To make a runner die between two writes,
+or lose a race, a scenario wraps its store in `Flaky`: the next matching
+commit fails, or another runner (or projector) writes first. Time moves
+only when a scenario moves it.
 
 Each scenario is held to account by mutation: breaking the rule it guards
-must make it fail. Measured 2026-11-17: 12 of 12 mutations of the engine
-and in-memory store, and 9 of 10 of the SQLite store, are caught. The one
-not caught (a snapshot replaced by an older one) changes no answer, only
-how long a fold takes.
+must make it fail. Measured 2026-11-17 on 46 scenarios: 19 of 19
+mutations of the engine, core and in-memory store, and 13 of 14 of the
+SQLite store, are caught. The one not caught (a snapshot replaced by an
+older one) changes no answer, only how long a fold takes. The SQLite suite
+passed 30 runs of 30 in a row.
 
 ## 5. Migration: bizkernel onto factum
 
@@ -134,14 +143,29 @@ files, blobs and secrets; personal-data sealing; webhooks and intakes;
 pages, apps and UI; hosted workers; bulk runs, sequences, reference data,
 rate limits; archiving old months of the log; branches; read replicas.
 
-## 7. Open questions
+## 7. Decisions, and why
 
-1. **Projection tables.** Rows are JSON under a key, read by key or whole
-   table. Declared columns and indexes, so a store can filter and order in
-   SQL, come when a program needs them.
-2. **Sync calls.** The engine is async and runtime-agnostic; the SQLite
-   store does its (short) work inline on the calling task.
-3. **Dead-letter retry.** A dead letter is cleared only by a new version's
-   rebuild; retrying one event in place is not built.
-4. **Process samples**: a kit that holds a new `next` to the progress older
-   versions recorded. Not built.
+- **`By::Principal` is text**, not a type parameter: every engine type would
+  otherwise carry the program's principal type, and bizkernel already
+  records its actors as text.
+- **Every pending thing is one kind of work row** (§1): one claim, one lease
+  and one wake rule serve processes, actions, tasks, schedules and waits.
+- **Async, on no particular runtime.** The engine never spawns or sleeps; a
+  writer that loses a race yields once before deciding again, up to 1000
+  times (every loss is another writer's win, so the log always moves; the
+  bound keeps one writer from losing forever). The SQLite store keeps its
+  connection on its own thread.
+- **Projection tables are declared**, and a change to them rebuilds the
+  projection as a new version does: no one has to remember to bump the
+  version. Queries take only declared columns, so every store can answer
+  them with an index.
+- **A dead letter is retried in place** with the code running now; a
+  rebuild still clears them all.
+- **Samples are taken from running processes** and checked by the model,
+  without a store: holding a new `next` to old progress is a pure check.
+
+## 8. Open
+
+1. **bizkernel's branches.** factum has one line. When bizkernel moves onto
+   factum (§5 step 2), its branches are either rebuilt on top of factum or
+   dropped: the owner decides.

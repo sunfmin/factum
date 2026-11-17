@@ -1,21 +1,37 @@
-//! factum's store on SQLite. Every write is one `BEGIN IMMEDIATE`
-//! transaction, so writers take turns and an event's sequence number is its
-//! commit order: every committed event is final, and the log is read by it.
-//! Several handles (and processes) may open one file; they wait for each
-//! other's writes up to the busy timeout.
+//! factum's store on SQLite.
+//!
+//! Every write is one `BEGIN IMMEDIATE` transaction, so writers take turns
+//! and an event's sequence number is its commit order: every committed
+//! event is final, and the log is read by it. Several handles (and
+//! processes) may open one file; they wait for each other's writes up to the
+//! busy timeout.
+//!
+//! Each handle owns one connection on a thread of its own, so the async
+//! methods never block the caller's runtime; they need no particular one.
+//!
+//! A projection's table is a table of its own, `"rows:<projection>:<table>"`:
+//! the key, the row as JSON, and each declared column generated from the row
+//! (`json_extract`), indexed as declared, so a query filters and orders in SQL.
+
+mod thread;
 
 use std::path::{Path, PathBuf};
-use std::sync::{Mutex, MutexGuard};
 use std::time::Duration;
 
 use factum_core::{
-    Event, Instant, Meta, Position, StreamId, Uuid, Value, Version, Work, WorkChange, WorkKind,
+    Event, Instant, Meta, Position, Query, RowOp, StreamId, Table, Uuid, Value, Version, Work,
+    WorkChange, WorkKind,
 };
 use factum_store::{
     Answer, Batch, Checkpoint, Claim, DeadLetter, Result, Snapshot, Store, StoreError, Unit,
     apply_op, committed_answer, op_target,
 };
-use rusqlite::{Connection, OptionalExtension, Row, Transaction, TransactionBehavior, params};
+use rusqlite::types::Value as Sql;
+use rusqlite::{
+    Connection, OptionalExtension, Row, Transaction, TransactionBehavior, params, params_from_iter,
+};
+
+use crate::thread::Worker;
 
 const SCHEMA: &str = "
 PRAGMA journal_mode = WAL;
@@ -53,13 +69,26 @@ CREATE INDEX IF NOT EXISTS work_due ON work (kind, due);
 CREATE INDEX IF NOT EXISTS work_name ON work (kind, name, ordering_key, seq);
 CREATE TABLE IF NOT EXISTS paces (name TEXT, key TEXT, not_before INTEGER NOT NULL, PRIMARY KEY (name, key));
 CREATE TABLE IF NOT EXISTS snapshots (stream TEXT PRIMARY KEY, version INTEGER NOT NULL, code TEXT NOT NULL, state TEXT NOT NULL);
-CREATE TABLE IF NOT EXISTS checkpoints (projection TEXT PRIMARY KEY, version INTEGER NOT NULL, position INTEGER NOT NULL, stopped INTEGER NOT NULL);
-CREATE TABLE IF NOT EXISTS rows (projection TEXT, tbl TEXT, key TEXT, row TEXT NOT NULL, PRIMARY KEY (projection, tbl, key));
-CREATE TABLE IF NOT EXISTS dead_letters (projection TEXT NOT NULL, position INTEGER NOT NULL, event TEXT NOT NULL, error TEXT NOT NULL);
+CREATE TABLE IF NOT EXISTS checkpoints (
+    projection TEXT PRIMARY KEY,
+    version INTEGER NOT NULL,
+    schema TEXT NOT NULL,
+    position INTEGER NOT NULL,
+    stopped INTEGER NOT NULL
+);
+CREATE TABLE IF NOT EXISTS projection_tables (projection TEXT, tbl TEXT, PRIMARY KEY (projection, tbl));
+CREATE TABLE IF NOT EXISTS dead_letters (
+    projection TEXT NOT NULL,
+    position INTEGER NOT NULL,
+    event TEXT NOT NULL,
+    stream TEXT NOT NULL,
+    version INTEGER NOT NULL,
+    error TEXT NOT NULL
+);
 ";
 
 pub struct SqliteStore {
-    conn: Mutex<Connection>,
+    worker: Worker,
     path: PathBuf,
 }
 
@@ -87,7 +116,7 @@ impl SqliteStore {
             .map_err(backend)?;
         conn.execute_batch(SCHEMA).map_err(backend)?;
         Ok(SqliteStore {
-            conn: Mutex::new(conn),
+            worker: Worker::start(conn).map_err(backend)?,
             path: path.as_ref().to_path_buf(),
         })
     }
@@ -96,21 +125,35 @@ impl SqliteStore {
         &self.path
     }
 
-    fn conn(&self) -> MutexGuard<'_, Connection> {
-        self.conn.lock().unwrap_or_else(|e| e.into_inner())
+    /// Runs `f` on this handle's connection, on its thread.
+    async fn run<T: Send + 'static>(
+        &self,
+        f: impl FnOnce(&mut Connection) -> Result<T> + Send + 'static,
+    ) -> Result<T> {
+        self.worker
+            .run(f)
+            .await
+            .unwrap_or_else(|| Err(backend("the store's thread has stopped")))
     }
 
     /// Runs `f` in one immediate transaction: a writer, alone.
-    fn write<T>(&self, f: impl FnOnce(&Transaction) -> Result<T>) -> Result<T> {
-        let mut conn = self.conn();
-        let tx = conn
-            .transaction_with_behavior(TransactionBehavior::Immediate)
-            .map_err(backend)?;
-        let out = f(&tx)?;
-        tx.commit().map_err(backend)?;
-        Ok(out)
+    async fn write<T: Send + 'static>(
+        &self,
+        f: impl FnOnce(&Transaction) -> Result<T> + Send + 'static,
+    ) -> Result<T> {
+        self.run(|conn| {
+            let tx = conn
+                .transaction_with_behavior(TransactionBehavior::Immediate)
+                .map_err(backend)?;
+            let out = f(&tx)?;
+            tx.commit().map_err(backend)?;
+            Ok(out)
+        })
+        .await
     }
 }
+
+// ---- rows ----
 
 const EVENT_COLUMNS: &str = "seq, id, stream, version, kind, type_version, data, meta";
 
@@ -153,25 +196,24 @@ fn events(conn: &Connection, sql: &str, args: impl rusqlite::Params) -> Result<V
 const WORK_COLUMNS: &str = "kind, id, name, process, step, payload, due, ordering_key, attempts, lease, holder, lease_until, claimed_at, seq";
 
 fn work(row: &Row) -> rusqlite::Result<(Work, i64)> {
-    let text = |i: usize| -> rusqlite::Result<Option<Uuid>> {
+    let id = |i: usize| -> rusqlite::Result<Option<Uuid>> {
         Ok(row
             .get::<_, Option<String>>(i)?
             .and_then(|s| Uuid::parse_str(&s).ok()))
     };
     let kind: String = row.get(0)?;
-    let id: String = row.get(1)?;
     let payload: String = row.get(5)?;
     let w = Work {
         kind: WorkKind::parse(&kind).unwrap_or(WorkKind::Advance),
-        id: Uuid::parse_str(&id).unwrap_or_default(),
+        id: id(1)?.unwrap_or_default(),
         name: row.get(2)?,
-        process: text(3)?,
+        process: id(3)?,
         step: row.get(4)?,
         payload: serde_json::from_str(&payload).unwrap_or(Value::Null),
         due: Instant(row.get(6)?),
         ordering_key: row.get(7)?,
         attempts: row.get::<_, i64>(8)? as u32,
-        lease: text(9)?,
+        lease: id(9)?,
         holder: row.get(10)?,
         lease_until: row.get::<_, Option<i64>>(11)?.map(Instant),
         claimed_at: row.get::<_, Option<i64>>(12)?.map(Instant),
@@ -239,33 +281,151 @@ fn change(tx: &Transaction, change: &WorkChange) -> Result<()> {
     .map_err(backend)
 }
 
+// ---- projection tables ----
+
+/// Quotes an identifier.
+fn ident(s: &str) -> String {
+    format!("\"{}\"", s.replace('"', "\"\""))
+}
+
+fn table_name(projection: &str, table: &str) -> String {
+    ident(&format!("rows:{projection}:{table}"))
+}
+
+fn has_table(conn: &Connection, projection: &str, table: &str) -> Result<bool> {
+    conn.query_row(
+        "SELECT 1 FROM projection_tables WHERE projection = ?1 AND tbl = ?2",
+        params![projection, table],
+        |_| Ok(()),
+    )
+    .optional()
+    .map(|f| f.is_some())
+    .map_err(backend)
+}
+
+fn create_table(tx: &Transaction, projection: &str, table: &Table) -> Result<()> {
+    let name = table_name(projection, &table.name);
+    let mut columns = vec![
+        "key TEXT PRIMARY KEY".to_string(),
+        "row TEXT NOT NULL".to_string(),
+    ];
+    for c in &table.columns {
+        columns.push(format!(
+            "{} GENERATED ALWAYS AS (json_extract(row, '$.{c}')) VIRTUAL",
+            ident(c)
+        ));
+    }
+    tx.execute_batch(&format!("CREATE TABLE {name} ({})", columns.join(", ")))
+        .map_err(backend)?;
+    for (n, index) in table.indexes.iter().enumerate() {
+        let on: Vec<String> = index.iter().map(|c| ident(c)).collect();
+        let index_name = ident(&format!("index:{projection}:{}:{n}", table.name));
+        tx.execute_batch(&format!(
+            "CREATE INDEX {index_name} ON {name} ({})",
+            on.join(", ")
+        ))
+        .map_err(backend)?;
+    }
+    tx.execute(
+        "INSERT INTO projection_tables (projection, tbl) VALUES (?1, ?2)",
+        params![projection, table.name],
+    )
+    .map(|_| ())
+    .map_err(backend)
+}
+
+fn read_row(conn: &Connection, projection: &str, table: &str, key: &str) -> Result<Option<Value>> {
+    if !has_table(conn, projection, table)? {
+        return Ok(None);
+    }
+    let sql = format!(
+        "SELECT row FROM {} WHERE key = ?1",
+        table_name(projection, table)
+    );
+    let found: Option<String> = conn
+        .query_row(&sql, [key], |r| r.get(0))
+        .optional()
+        .map_err(backend)?;
+    found.map(|s| parse(&s)).transpose()
+}
+
+fn apply_ops(tx: &Transaction, projection: &str, ops: &[RowOp]) -> Result<()> {
+    for op in ops {
+        let (table, key) = op_target(op);
+        if !has_table(tx, projection, table)? {
+            return Err(backend(format!("{projection} has no table {table}")));
+        }
+        let name = table_name(projection, table);
+        match apply_op(read_row(tx, projection, table, key)?, op) {
+            Some(row) => tx.execute(
+                &format!("INSERT OR REPLACE INTO {name} (key, row) VALUES (?1, ?2)"),
+                params![key, json(&row)?],
+            ),
+            None => tx.execute(&format!("DELETE FROM {name} WHERE key = ?1"), [key]),
+        }
+        .map_err(backend)?;
+    }
+    Ok(())
+}
+
+fn keyed_rows(
+    conn: &Connection,
+    sql: &str,
+    args: impl rusqlite::Params,
+) -> Result<Vec<(String, Value)>> {
+    let mut stmt = conn.prepare(sql).map_err(backend)?;
+    let rows = stmt
+        .query_map(args, |r| {
+            Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?))
+        })
+        .map_err(backend)?;
+    rows.map(|r| {
+        let (k, v) = r.map_err(backend)?;
+        Ok((k, parse(&v)?))
+    })
+    .collect()
+}
+
+/// A JSON value as SQLite compares it with what `json_extract` gives.
+fn scalar(v: &Value) -> Sql {
+    match v {
+        Value::Null => Sql::Null,
+        Value::Bool(b) => Sql::Integer(i64::from(*b)),
+        Value::Number(n) => n
+            .as_i64()
+            .map_or_else(|| Sql::Real(n.as_f64().unwrap_or(0.0)), Sql::Integer),
+        Value::String(s) => Sql::Text(s.clone()),
+        other => Sql::Text(other.to_string()),
+    }
+}
+
 impl Store for SqliteStore {
     async fn read_stream(&self, stream: &StreamId, after: Version) -> Result<Vec<Event>> {
-        let sql = format!(
-            "SELECT {EVENT_COLUMNS} FROM events WHERE stream = ?1 AND version > ?2 ORDER BY version"
-        );
-        events(
-            &self.conn(),
-            &sql,
-            params![stream.to_string(), after.0 as i64],
-        )
+        let stream = stream.to_string();
+        self.run(move |c| {
+            let sql = format!("SELECT {EVENT_COLUMNS} FROM events WHERE stream = ?1 AND version > ?2 ORDER BY version");
+            events(c, &sql, params![stream, after.0 as i64])
+        })
+        .await
     }
 
     async fn answer(&self, key: Uuid) -> Result<Option<Answer>> {
-        let found: Option<String> = self
-            .conn()
-            .query_row(
-                "SELECT answer FROM answers WHERE key = ?1",
-                [key.to_string()],
-                |r| r.get(0),
-            )
-            .optional()
-            .map_err(backend)?;
-        found.map(|a| parse(&a)).transpose()
+        self.run(move |c| {
+            let found: Option<String> = c
+                .query_row(
+                    "SELECT answer FROM answers WHERE key = ?1",
+                    [key.to_string()],
+                    |r| r.get(0),
+                )
+                .optional()
+                .map_err(backend)?;
+            found.map(|a| parse(&a)).transpose()
+        })
+        .await
     }
 
     async fn commit(&self, unit: Unit) -> Result<Vec<Event>> {
-        self.write(|tx| {
+        self.write(move |tx| {
             for a in &unit.appends {
                 let at: i64 = tx
                     .query_row("SELECT COALESCE(MAX(version), 0) FROM events WHERE stream = ?1", [a.stream.to_string()], |r| r.get(0))
@@ -315,16 +475,20 @@ impl Store for SqliteStore {
             }
             Ok(committed)
         })
+        .await
     }
 
     async fn read_log(&self, after: Position, limit: usize) -> Result<Vec<Event>> {
-        let sql =
-            format!("SELECT {EVENT_COLUMNS} FROM events WHERE seq > ?1 ORDER BY seq LIMIT ?2");
-        events(&self.conn(), &sql, params![after.1 as i64, limit as i64])
+        self.run(move |c| {
+            let sql =
+                format!("SELECT {EVENT_COLUMNS} FROM events WHERE seq > ?1 ORDER BY seq LIMIT ?2");
+            events(c, &sql, params![after.1 as i64, limit as i64])
+        })
+        .await
     }
 
     async fn claim(&self, claim: Claim) -> Result<Vec<Work>> {
-        self.write(|tx| {
+        self.write(move |tx| {
             let sql = format!(
                 "SELECT {WORK_COLUMNS} FROM work
                  WHERE kind = ?1 AND due <= ?2 AND (lease_until IS NULL OR lease_until <= ?2)
@@ -378,6 +542,7 @@ impl Store for SqliteStore {
             }
             Ok(claimed)
         })
+        .await
     }
 
     async fn renew(
@@ -388,7 +553,7 @@ impl Store for SqliteStore {
         now: Instant,
         until: Instant,
     ) -> Result<bool> {
-        self.write(|tx| {
+        self.write(move |tx| {
             let n = tx
                 .execute(
                     "UPDATE work SET lease_until = ?5 WHERE kind = ?1 AND id = ?2 AND lease = ?3 AND lease_until > ?4",
@@ -397,93 +562,129 @@ impl Store for SqliteStore {
                 .map_err(backend)?;
             Ok(n == 1)
         })
+        .await
     }
 
     async fn work(&self, kind: WorkKind, id: Uuid) -> Result<Option<Work>> {
-        let sql = format!("SELECT {WORK_COLUMNS} FROM work WHERE kind = ?1 AND id = ?2");
-        Ok(
-            works(&self.conn(), &sql, params![kind.as_str(), id.to_string()])?
+        self.run(move |c| {
+            let sql = format!("SELECT {WORK_COLUMNS} FROM work WHERE kind = ?1 AND id = ?2");
+            Ok(works(c, &sql, params![kind.as_str(), id.to_string()])?
                 .into_iter()
                 .next()
-                .map(|(w, _)| w),
-        )
+                .map(|(w, _)| w))
+        })
+        .await
     }
 
     async fn work_named(&self, kind: WorkKind, name: &str) -> Result<Vec<Work>> {
-        let sql =
-            format!("SELECT {WORK_COLUMNS} FROM work WHERE kind = ?1 AND name = ?2 ORDER BY seq");
-        Ok(works(&self.conn(), &sql, params![kind.as_str(), name])?
-            .into_iter()
-            .map(|(w, _)| w)
-            .collect())
+        let name = name.to_string();
+        self.run(move |c| {
+            let sql = format!(
+                "SELECT {WORK_COLUMNS} FROM work WHERE kind = ?1 AND name = ?2 ORDER BY seq"
+            );
+            Ok(works(c, &sql, params![kind.as_str(), name])?
+                .into_iter()
+                .map(|(w, _)| w)
+                .collect())
+        })
+        .await
     }
 
     async fn snapshot(&self, stream: &StreamId) -> Result<Option<Snapshot>> {
-        let found: Option<(i64, String, String)> = self
-            .conn()
-            .query_row(
-                "SELECT version, code, state FROM snapshots WHERE stream = ?1",
-                [stream.to_string()],
-                |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
-            )
-            .optional()
-            .map_err(backend)?;
-        found
-            .map(|(v, code, state)| {
-                Ok(Snapshot {
-                    version: Version(v as u64),
-                    code,
-                    state: parse(&state)?,
+        let stream = stream.to_string();
+        self.run(move |c| {
+            let found: Option<(i64, String, String)> = c
+                .query_row(
+                    "SELECT version, code, state FROM snapshots WHERE stream = ?1",
+                    [stream],
+                    |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
+                )
+                .optional()
+                .map_err(backend)?;
+            found
+                .map(|(v, code, state)| {
+                    Ok(Snapshot {
+                        version: Version(v as u64),
+                        code,
+                        state: parse(&state)?,
+                    })
                 })
-            })
-            .transpose()
+                .transpose()
+        })
+        .await
     }
 
     async fn keep_snapshot(&self, stream: &StreamId, snapshot: Snapshot) -> Result<()> {
-        self.write(|tx| {
+        let stream = stream.to_string();
+        self.write(move |tx| {
             tx.execute(
                 "INSERT INTO snapshots (stream, version, code, state) VALUES (?1, ?2, ?3, ?4)
                  ON CONFLICT (stream) DO UPDATE SET version = excluded.version, code = excluded.code, state = excluded.state
                  WHERE snapshots.version < excluded.version OR snapshots.code <> excluded.code",
-                params![stream.to_string(), snapshot.version.0 as i64, snapshot.code, json(&snapshot.state)?],
+                params![stream, snapshot.version.0 as i64, snapshot.code, json(&snapshot.state)?],
             )
             .map(|_| ())
             .map_err(backend)
         })
+        .await
     }
 
     async fn checkpoint(&self, projection: &str) -> Result<Option<Checkpoint>> {
-        self.conn()
-            .query_row(
-                "SELECT version, position, stopped FROM checkpoints WHERE projection = ?1",
+        let projection = projection.to_string();
+        self.run(move |c| {
+            c.query_row(
+                "SELECT version, schema, position, stopped FROM checkpoints WHERE projection = ?1",
                 [projection],
                 |r| {
                     Ok(Checkpoint {
                         version: r.get::<_, i64>(0)? as u32,
-                        position: Position(0, r.get::<_, i64>(1)? as u64),
-                        stopped: r.get::<_, i64>(2)? != 0,
+                        schema: r.get(1)?,
+                        position: Position(0, r.get::<_, i64>(2)? as u64),
+                        stopped: r.get::<_, i64>(3)? != 0,
                     })
                 },
             )
             .optional()
             .map_err(backend)
+        })
+        .await
     }
 
-    async fn reset_projection(&self, projection: &str, version: u32) -> Result<()> {
-        self.write(|tx| {
-            tx.execute("DELETE FROM rows WHERE projection = ?1", [projection]).map_err(backend)?;
-            tx.execute("DELETE FROM dead_letters WHERE projection = ?1", [projection]).map_err(backend)?;
+    async fn reset_projection(
+        &self,
+        projection: &str,
+        version: u32,
+        schema: &str,
+        tables: &[Table],
+    ) -> Result<()> {
+        let (projection, schema, tables) =
+            (projection.to_string(), schema.to_string(), tables.to_vec());
+        self.write(move |tx| {
+            let old: Vec<String> = {
+                let mut stmt = tx.prepare("SELECT tbl FROM projection_tables WHERE projection = ?1").map_err(backend)?;
+                let rows = stmt.query_map([&projection], |r| r.get(0)).map_err(backend)?;
+                rows.collect::<rusqlite::Result<_>>().map_err(backend)?
+            };
+            for t in old {
+                tx.execute_batch(&format!("DROP TABLE IF EXISTS {}", table_name(&projection, &t))).map_err(backend)?;
+            }
+            tx.execute("DELETE FROM projection_tables WHERE projection = ?1", [&projection]).map_err(backend)?;
+            tx.execute("DELETE FROM dead_letters WHERE projection = ?1", [&projection]).map_err(backend)?;
+            for t in &tables {
+                create_table(tx, &projection, t)?;
+            }
             tx.execute(
-                "INSERT OR REPLACE INTO checkpoints (projection, version, position, stopped) VALUES (?1, ?2, 0, 0)",
-                params![projection, version],
+                "INSERT OR REPLACE INTO checkpoints (projection, version, schema, position, stopped) VALUES (?1, ?2, ?3, 0, 0)",
+                params![projection, version, schema],
             )
             .map(|_| ())
             .map_err(backend)
         })
+        .await
     }
 
     async fn apply_projection(&self, batch: Batch) -> Result<()> {
-        self.write(|tx| {
+        self.write(move |tx| {
             let at: Option<(i64, i64)> = tx
                 .query_row("SELECT version, position FROM checkpoints WHERE projection = ?1", [&batch.projection], |r| {
                     Ok((r.get(0)?, r.get(1)?))
@@ -493,33 +694,11 @@ impl Store for SqliteStore {
             if at != Some((i64::from(batch.version), batch.from.1 as i64)) {
                 return Err(StoreError::Conflict(StreamId::new(format!("projection:{}", batch.projection), Uuid::nil())));
             }
-            for op in &batch.ops {
-                let (table, key) = op_target(op);
-                let old: Option<String> = tx
-                    .query_row(
-                        "SELECT row FROM rows WHERE projection = ?1 AND tbl = ?2 AND key = ?3",
-                        params![batch.projection, table, key],
-                        |r| r.get(0),
-                    )
-                    .optional()
-                    .map_err(backend)?;
-                let old = old.map(|s| parse::<Value>(&s)).transpose()?;
-                match apply_op(old, op) {
-                    Some(row) => tx.execute(
-                        "INSERT OR REPLACE INTO rows (projection, tbl, key, row) VALUES (?1, ?2, ?3, ?4)",
-                        params![batch.projection, table, key, json(&row)?],
-                    ),
-                    None => tx.execute(
-                        "DELETE FROM rows WHERE projection = ?1 AND tbl = ?2 AND key = ?3",
-                        params![batch.projection, table, key],
-                    ),
-                }
-                .map_err(backend)?;
-            }
+            apply_ops(tx, &batch.projection, &batch.ops)?;
             for d in &batch.dead {
                 tx.execute(
-                    "INSERT INTO dead_letters (projection, position, event, error) VALUES (?1, ?2, ?3, ?4)",
-                    params![d.projection, d.position.1 as i64, d.event.to_string(), d.error],
+                    "INSERT INTO dead_letters (projection, position, event, stream, version, error) VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
+                    params![d.projection, d.position.1 as i64, d.event.to_string(), d.stream.to_string(), d.version.0 as i64, d.error],
                 )
                 .map_err(backend)?;
             }
@@ -530,61 +709,122 @@ impl Store for SqliteStore {
             .map(|_| ())
             .map_err(backend)
         })
+        .await
+    }
+
+    async fn resolve_dead_letter(
+        &self,
+        projection: &str,
+        event: Uuid,
+        ops: Vec<RowOp>,
+    ) -> Result<()> {
+        let projection = projection.to_string();
+        self.write(move |tx| {
+            let position: Option<i64> = tx
+                .query_row(
+                    "SELECT position FROM dead_letters WHERE projection = ?1 AND event = ?2",
+                    params![projection, event.to_string()],
+                    |r| r.get(0),
+                )
+                .optional()
+                .map_err(backend)?;
+            let Some(position) = position else {
+                return Err(StoreError::Conflict(StreamId::new(format!("dead-letter:{projection}"), event)));
+            };
+            apply_ops(tx, &projection, &ops)?;
+            tx.execute("DELETE FROM dead_letters WHERE projection = ?1 AND event = ?2", params![projection, event.to_string()])
+                .map_err(backend)?;
+            tx.execute(
+                "UPDATE checkpoints SET position = ?2, stopped = 0 WHERE projection = ?1 AND stopped = 1 AND position < ?2",
+                params![projection, position],
+            )
+            .map(|_| ())
+            .map_err(backend)
+        })
+        .await
+    }
+
+    async fn query(&self, projection: &str, query: &Query) -> Result<Vec<(String, Value)>> {
+        let (projection, query) = (projection.to_string(), query.clone());
+        self.run(move |c| {
+            if !has_table(c, &projection, &query.table)? {
+                return Ok(Vec::new());
+            }
+            let mut sql = format!(
+                "SELECT key, row FROM {}",
+                table_name(&projection, &query.table)
+            );
+            let mut args = Vec::new();
+            for (n, f) in query.filters.iter().enumerate() {
+                sql.push_str(if n == 0 { " WHERE " } else { " AND " });
+                sql.push_str(&format!("{} {} ?{}", ident(&f.column), f.op.sql(), n + 1));
+                args.push(scalar(&f.value));
+            }
+            sql.push_str(" ORDER BY ");
+            for o in &query.order {
+                sql.push_str(&format!(
+                    "{} {}, ",
+                    ident(&o.column),
+                    if o.descending { "DESC" } else { "ASC" }
+                ));
+            }
+            sql.push_str("key");
+            if let Some(limit) = query.limit {
+                sql.push_str(&format!(" LIMIT {limit}"));
+            }
+            keyed_rows(c, &sql, params_from_iter(args))
+        })
+        .await
     }
 
     async fn rows(&self, projection: &str, table: &str) -> Result<Vec<(String, Value)>> {
-        let conn = self.conn();
-        let mut stmt = conn
-            .prepare("SELECT key, row FROM rows WHERE projection = ?1 AND tbl = ?2 ORDER BY key")
-            .map_err(backend)?;
-        let rows = stmt
-            .query_map(params![projection, table], |r| {
-                Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?))
-            })
-            .map_err(backend)?;
-        rows.map(|r| {
-            let (k, v) = r.map_err(backend)?;
-            Ok((k, parse(&v)?))
+        let (projection, table) = (projection.to_string(), table.to_string());
+        self.run(move |c| {
+            if !has_table(c, &projection, &table)? {
+                return Ok(Vec::new());
+            }
+            keyed_rows(
+                c,
+                &format!(
+                    "SELECT key, row FROM {} ORDER BY key",
+                    table_name(&projection, &table)
+                ),
+                [],
+            )
         })
-        .collect()
+        .await
     }
 
     async fn row(&self, projection: &str, table: &str, key: &str) -> Result<Option<Value>> {
-        let found: Option<String> = self
-            .conn()
-            .query_row(
-                "SELECT row FROM rows WHERE projection = ?1 AND tbl = ?2 AND key = ?3",
-                params![projection, table, key],
-                |r| r.get(0),
-            )
-            .optional()
-            .map_err(backend)?;
-        found.map(|s| parse(&s)).transpose()
+        let (projection, table, key) = (projection.to_string(), table.to_string(), key.to_string());
+        self.run(move |c| read_row(c, &projection, &table, &key))
+            .await
     }
 
     async fn dead_letters(&self, projection: &str) -> Result<Vec<DeadLetter>> {
-        let conn = self.conn();
-        let mut stmt = conn
-            .prepare("SELECT position, event, error FROM dead_letters WHERE projection = ?1 ORDER BY position")
-            .map_err(backend)?;
-        let rows = stmt
-            .query_map([projection], |r| {
-                Ok((
-                    r.get::<_, i64>(0)?,
-                    r.get::<_, String>(1)?,
-                    r.get::<_, String>(2)?,
-                ))
+        let projection = projection.to_string();
+        self.run(move |c| {
+            let mut stmt = c
+                .prepare("SELECT position, event, stream, version, error FROM dead_letters WHERE projection = ?1 ORDER BY position")
+                .map_err(backend)?;
+            let rows = stmt
+                .query_map([&projection], |r| {
+                    Ok((r.get::<_, i64>(0)?, r.get::<_, String>(1)?, r.get::<_, String>(2)?, r.get::<_, i64>(3)?, r.get::<_, String>(4)?))
+                })
+                .map_err(backend)?;
+            rows.map(|r| {
+                let (position, event, stream, version, error) = r.map_err(backend)?;
+                Ok(DeadLetter {
+                    projection: projection.clone(),
+                    position: Position(0, position as u64),
+                    event: uuid(&event)?,
+                    stream: StreamId::try_from(stream).map_err(backend)?,
+                    version: Version(version as u64),
+                    error,
+                })
             })
-            .map_err(backend)?;
-        rows.map(|r| {
-            let (position, event, error) = r.map_err(backend)?;
-            Ok(DeadLetter {
-                projection: projection.to_string(),
-                position: Position(0, position as u64),
-                event: uuid(&event)?,
-                error,
-            })
+            .collect()
         })
-        .collect()
+        .await
     }
 }

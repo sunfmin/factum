@@ -1244,11 +1244,11 @@ pub async fn a_sample_holds_a_new_next_to_old_progress<B: Backend>(b: &B) {
 
     assert!(
         w.shop(OrderList::default())
-            .check_samples(&[kept.clone()])
+            .check_samples(std::slice::from_ref(&kept))
             .is_empty()
     );
     let renamed = factum::Model::new().process::<crate::domain::CheckoutRenamed>();
-    let mismatches = renamed.check_samples(&[kept.clone()]);
+    let mismatches = renamed.check_samples(std::slice::from_ref(&kept));
     assert_eq!(mismatches.len(), 1);
     assert!(
         matches!(&mismatches[0].now, Some(factum::Next::Step { key, .. }) if key == "charge-card")
