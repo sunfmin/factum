@@ -8,6 +8,7 @@ use factum::{
     Version,
 };
 use factum_core::{start_key, step_key};
+use factum_store::AnswerResult;
 use serde_json::json;
 
 use crate::domain::{EXPIRES_MS, LIMIT, OrderList, PICKUP_MS, TALLY};
@@ -171,6 +172,37 @@ pub async fn a_fault_is_no_answer_and_the_key_decides_again<B: Backend>(b: &B) {
     assert_eq!(state["total"], 3);
 }
 
+pub async fn a_refusal_that_loses_its_key_answers_what_the_key_holds<B: Backend>(b: &B) {
+    let w = World::new(b);
+    let (a, flaky) = w.flaky("a");
+    let other = w.engine("b");
+    let o = id();
+    let s = sub("order.pay", json!({ "order": o, "charge": "cash" }));
+    let rival = s.clone();
+    // A refuses the payment, but before it records the refusal another
+    // writer places the order and pays it under the same key.
+    flaky.race_on(
+        |u| {
+            u.answer
+                .as_ref()
+                .is_some_and(|(_, a)| matches!(a.result, AnswerResult::Rejected(_)))
+        },
+        Box::pin(async move {
+            other
+                .submit(sub("order.place", json!({ "order": o, "total": 100 })))
+                .await
+                .unwrap();
+            other.submit(rival).await.unwrap();
+        }),
+    );
+    let first = a.submit(s.clone()).await.unwrap();
+    let again = w.engine("c").submit(s.clone()).await.unwrap();
+    assert!(again.replayed);
+    assert_eq!(first.events, again.events);
+    assert_eq!(kinds(&first.events), ["OrderPaid"]);
+    assert_eq!(count(&a, o, "OrderPaid").await, 1);
+}
+
 pub async fn a_plan_records_nothing<B: Backend>(b: &B) {
     let w = World::new(b);
     let e = w.engine("a");
@@ -251,6 +283,28 @@ pub async fn an_ended_stream_refuses_every_command<B: Backend>(b: &B) {
     assert_eq!(
         refused(e.submit(sub("order.close", json!({ "order": o }))).await),
         "ended"
+    );
+    assert_eq!(
+        refused(
+            e.submit(sub("order.cancel", json!({ "order": o, "reason": "x" })))
+                .await
+        ),
+        "ended"
+    );
+    assert_eq!(status(&e, o).await, "closed");
+}
+
+pub async fn a_stream_ended_by_a_scheduling_command_stays_ended<B: Backend>(b: &B) {
+    let w = World::new(b);
+    let e = w.engine("a");
+    let o = place(&e, 5).await;
+    pay(&e, o).await;
+    e.submit(sub("order.close_and_remind", json!({ "order": o })))
+        .await
+        .unwrap();
+    assert_eq!(
+        kinds(&e.history(&order(o)).await.unwrap()).last(),
+        Some(&"CommandScheduled")
     );
     assert_eq!(
         refused(
