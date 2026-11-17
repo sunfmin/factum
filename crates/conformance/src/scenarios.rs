@@ -8,7 +8,7 @@ use factum::{
     Version,
 };
 use factum_core::{Work, WorkChange, WorkKind, start_key, step_key};
-use factum_store::{AnswerResult, Unit};
+use factum_store::{AnswerResult, Batch, StoreError, Unit};
 use serde_json::json;
 
 use crate::domain::{EXPIRES_MS, LIMIT, OrderList, PICKUP_MS, TALLY};
@@ -1173,6 +1173,41 @@ pub async fn a_projection_that_stops_holds_until_rebuilt<B: Backend>(b: &B) {
     assert!(fixed.dead_letters("orders").await.unwrap().is_empty());
 }
 
+pub async fn a_read_never_serves_rows_another_version_built<B: Backend>(b: &B) {
+    let w = World::new(b);
+    let e = w.engine("a");
+    let o = place(&e, 500).await;
+    e.settle().await.unwrap();
+    assert_eq!(e.rows("orders", "orders").await.unwrap().len(), 1);
+
+    let v2 = w.engine_with(
+        w.shop(OrderList {
+            version: 2,
+            ..OrderList::default()
+        }),
+        "b",
+    );
+    assert!(v2.rows("orders", "orders").await.unwrap().is_empty());
+    assert_eq!(
+        v2.row("orders", "orders", &o.to_string()).await.unwrap(),
+        None
+    );
+    assert!(
+        v2.query("orders", &Query::table("orders"))
+            .await
+            .unwrap()
+            .is_empty()
+    );
+    assert_eq!(
+        e.rows("orders", "orders").await.unwrap().len(),
+        1,
+        "a read writes nothing: the old version's rows stand until a rebuild"
+    );
+    v2.settle().await.unwrap();
+    assert_eq!(v2.rows("orders", "orders").await.unwrap().len(), 1);
+    assert!(e.rows("orders", "orders").await.unwrap().is_empty());
+}
+
 // ---- reading old events and snapshots ----
 
 pub async fn old_events_are_read_in_their_current_shape<B: Backend>(b: &B) {
@@ -1391,7 +1426,46 @@ pub async fn a_projection_that_writes_an_undeclared_table_fails_the_event<B: Bac
         dead[0].error
     );
     assert_eq!(e.rows("orders", "orders").await.unwrap().len(), 1);
-    assert!(e.rows("orders", "strays").await.unwrap().is_empty());
+    assert_eq!(refused(e.rows("orders", "strays").await), "invalid_query");
+}
+
+pub async fn every_store_refuses_rows_of_an_undeclared_table<B: Backend>(b: &B) {
+    let w = World::new(b);
+    let e = w.engine("a");
+    place(&e, 5).await;
+    e.settle().await.unwrap();
+    let at = e.store().checkpoint("orders").await.unwrap().unwrap();
+    let put = |table: &str| factum::RowOp::Put {
+        table: table.into(),
+        key: "k".into(),
+        row: json!({ "total": 1 }),
+    };
+    let batch = Batch {
+        projection: "orders".into(),
+        version: at.version,
+        from: at.position,
+        to: at.position,
+        ops: vec![put("orders"), put("strays")],
+        dead: Vec::new(),
+        resolved: Vec::new(),
+        stop: false,
+    };
+    assert_eq!(
+        e.store().apply_projection(batch).await,
+        Err(StoreError::Undeclared {
+            projection: "orders".into(),
+            table: "strays".into()
+        })
+    );
+    assert_eq!(
+        e.row("orders", "orders", "k").await.unwrap(),
+        None,
+        "all or none"
+    );
+    assert_eq!(
+        e.store().rows("orders", "strays").await.unwrap(),
+        Vec::new()
+    );
 }
 
 // ---- dead letters retried ----
@@ -1460,6 +1534,50 @@ pub async fn a_stopped_projection_goes_on_once_its_dead_letter_is_retried<B: Bac
     place(&fixed, 15).await;
     fixed.settle().await.unwrap();
     assert_eq!(fixed.rows("orders", "orders").await.unwrap().len(), 4);
+}
+
+pub async fn a_dead_letter_another_version_left_is_not_retried<B: Backend>(b: &B) {
+    let w = World::with_orders(
+        b,
+        OrderList {
+            fails_on: Some(13),
+            ..OrderList::default()
+        },
+    );
+    let e = w.engine("a");
+    let bad = place(&e, 13).await;
+    e.settle().await.unwrap();
+    let dead = e.dead_letters("orders").await.unwrap()[0].event;
+
+    let v2 = w.engine_with(
+        w.shop(OrderList {
+            version: 2,
+            ..OrderList::default()
+        }),
+        "b",
+    );
+    assert!(v2.dead_letters("orders").await.unwrap().is_empty());
+    assert_eq!(
+        refused(v2.retry_dead_letter("orders", dead).await),
+        "unknown"
+    );
+    assert_eq!(
+        e.dead_letters("orders").await.unwrap().len(),
+        1,
+        "nothing written to the old version"
+    );
+    assert_eq!(
+        e.row("orders", "orders", &bad.to_string()).await.unwrap(),
+        None
+    );
+    v2.settle().await.unwrap();
+    assert!(
+        v2.row("orders", "orders", &bad.to_string())
+            .await
+            .unwrap()
+            .is_some(),
+        "the rebuild projects it with the code running now"
+    );
 }
 
 // ---- process samples ----

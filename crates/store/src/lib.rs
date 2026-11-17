@@ -22,6 +22,13 @@ pub enum StoreError {
     KeyTaken(Uuid),
     /// A guarded or released row is not held under the given lease.
     LeaseLost,
+    /// A projection batch was made from a checkpoint that has moved, or
+    /// resolves a dead letter that is gone: another projector got there
+    /// first. Nothing of the batch was written.
+    Stale(String),
+    /// A row op names a table its projection did not declare when it was
+    /// last built. Nothing of the batch was written.
+    Undeclared { projection: String, table: String },
     /// The backend failed; nothing of the unit was written.
     Backend(String),
 }
@@ -32,6 +39,10 @@ impl std::fmt::Display for StoreError {
             StoreError::Conflict(s) => write!(f, "conflict on {s}"),
             StoreError::KeyTaken(k) => write!(f, "key {k} already answered"),
             StoreError::LeaseLost => write!(f, "lease lost"),
+            StoreError::Stale(p) => write!(f, "{p} moved since the batch began"),
+            StoreError::Undeclared { projection, table } => {
+                write!(f, "{projection} has no table {table}")
+            }
             StoreError::Backend(e) => write!(f, "store: {e}"),
         }
     }
@@ -102,16 +113,22 @@ pub struct DeadLetter {
     pub error: String,
 }
 
-/// A projection's catch-up: rows, dead letters and checkpoint, together.
+/// One move of a projection: its rows, its dead letters and its checkpoint,
+/// together. A catch-up and a retried dead letter are both one.
 #[derive(Clone, Debug)]
 pub struct Batch {
     pub projection: String,
     pub version: u32,
-    /// Refused as a conflict unless the checkpoint is here.
+    /// `Stale` unless the checkpoint is here.
     pub from: Position,
     pub to: Position,
     pub ops: Vec<RowOp>,
+    /// New dead letters.
     pub dead: Vec<DeadLetter>,
+    /// Dead letters (by event) retried in this batch, removed with it;
+    /// `Stale` if one is gone.
+    pub resolved: Vec<Uuid>,
+    /// Whether the checkpoint is held at a dead letter after this batch.
     pub stop: bool,
 }
 
@@ -200,17 +217,11 @@ pub trait Store: Send + Sync + 'static {
         tables: &[Table],
     ) -> impl Future<Output = Result<()>> + Send;
 
+    /// Writes the batch, all of it or none: `Stale` unless the checkpoint is
+    /// at the batch's version and `from` and every resolved dead letter is
+    /// there; `Undeclared` if an op names a table the projection was not
+    /// built with.
     fn apply_projection(&self, batch: Batch) -> impl Future<Output = Result<()>> + Send;
-
-    /// Applies the row ops of a dead letter retried with the code running
-    /// now, and removes it. A projection stopped at it moves past it and goes
-    /// on. `Conflict` if there is no such dead letter.
-    fn resolve_dead_letter(
-        &self,
-        projection: &str,
-        event: Uuid,
-        ops: Vec<RowOp>,
-    ) -> impl Future<Output = Result<()>> + Send;
 
     /// Answers a query over one of the projection's tables. The engine has
     /// checked that it names only declared columns.

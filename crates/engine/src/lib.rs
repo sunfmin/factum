@@ -10,6 +10,7 @@
 mod clock;
 mod engine;
 mod model;
+mod projector;
 mod reads;
 mod work;
 

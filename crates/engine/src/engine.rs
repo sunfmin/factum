@@ -1,13 +1,11 @@
 use std::sync::Arc;
 
 use factum_core::{
-    By, DynAggregate, Event, Finished, Instant, Meta, NewEvent, OnFailure, PROCESS, ProcessEvent,
-    ProcessState, Progress, Rejection, SCHEDULED, Step, StreamId, Table, Uuid, Value, Version,
-    WorkChange, WorkKind, codes, effects, fingerprint, start_key,
+    By, DynAggregate, Event, Finished, Instant, Meta, NewEvent, PROCESS, ProcessEvent,
+    ProcessState, Progress, Rejection, SCHEDULED, Step, StreamId, Uuid, Value, Version, WorkChange,
+    WorkKind, codes, effects, fingerprint, start_key,
 };
-use factum_store::{
-    Answer, AnswerResult, Append, Batch, Checkpoint, DeadLetter, Snapshot, Store, StoreError, Unit,
-};
+use factum_store::{Answer, AnswerResult, Append, Batch, Snapshot, Store, StoreError, Unit};
 use serde::Serialize;
 use serde_json::json;
 
@@ -106,12 +104,13 @@ impl Default for Options {
     }
 }
 
-/// Where the engine keeps how far it has dispatched the log.
+/// Where the engine keeps how far it has dispatched the log: a checkpoint
+/// with no tables, under a name no projection can have.
 const DISPATCH: &str = "factum.dispatch";
 /// How often one writer decides again after losing a race. Every loss is
 /// another writer's win, so the log always moves; the bound only keeps one
 /// writer from losing forever.
-const MAX_RETRIES: usize = 1000;
+pub(crate) const MAX_RETRIES: usize = 1000;
 /// How many ticks `settle` takes before it calls the engine stuck busy.
 const SETTLE_TICKS: usize = 1000;
 
@@ -594,7 +593,7 @@ impl<S: Store> Engine<S> {
     }
 
     async fn dispatch(&self, now: Instant) -> Result<usize, Error> {
-        let mut at = self.checkpoint_of(DISPATCH, 1, &[]).await?;
+        let mut at = self.make_current(DISPATCH, 1, &[]).await?;
         let mut done = 0;
         loop {
             let events = self.store.read_log(at.position, self.options.batch).await?;
@@ -611,11 +610,12 @@ impl<S: Store> Engine<S> {
                 to: last,
                 ops: Vec::new(),
                 dead: Vec::new(),
+                resolved: Vec::new(),
                 stop: false,
             };
             match self.store.apply_projection(batch).await {
                 Ok(()) => at.position = last,
-                Err(StoreError::Conflict(_)) => return Ok(done),
+                Err(StoreError::Stale(_)) => return Ok(done),
                 Err(e) => return Err(e.into()),
             }
         }
@@ -642,108 +642,6 @@ impl<S: Store> Engine<S> {
         }
         done += self.arrived(&e, now).await?;
         Ok(done)
-    }
-
-    /// Where the projection `name` stands, built afresh if its version or its
-    /// tables changed since it was built.
-    pub(crate) async fn checkpoint_of(
-        &self,
-        name: &str,
-        version: u32,
-        tables: &[Table],
-    ) -> Result<Checkpoint, Error> {
-        let schema = serde_json::to_string(tables).map_err(|e| Error::Fault(e.to_string()))?;
-        match self.store.checkpoint(name).await? {
-            Some(c) if c.version == version && c.schema == schema => Ok(c),
-            _ => {
-                self.store
-                    .reset_projection(name, version, &schema, tables)
-                    .await?;
-                Ok(Checkpoint {
-                    version,
-                    schema,
-                    position: Default::default(),
-                    stopped: false,
-                })
-            }
-        }
-    }
-
-    async fn project(&self) -> Result<usize, Error> {
-        let mut done = 0;
-        for p in &self.model.projections {
-            let tables = p.tables();
-            let mut at = self.checkpoint_of(p.name(), p.version(), &tables).await?;
-            while !at.stopped {
-                let events = self.store.read_log(at.position, self.options.batch).await?;
-                if events.is_empty() {
-                    break;
-                }
-                let (mut ops, mut dead, mut to, mut stop) =
-                    (Vec::new(), Vec::new(), at.position, false);
-                for e in events {
-                    let (position, id, stream, version) =
-                        (e.position, e.id, e.stream.clone(), e.version);
-                    let result = self.project_one(p.as_ref(), &tables, e);
-                    match result {
-                        Ok(o) => ops.extend(o),
-                        Err(error) => {
-                            dead.push(DeadLetter {
-                                projection: p.name().into(),
-                                position,
-                                event: id,
-                                stream,
-                                version,
-                                error,
-                            });
-                            if p.on_failure() == OnFailure::Stop {
-                                stop = true;
-                                break;
-                            }
-                        }
-                    }
-                    to = position;
-                    done += 1;
-                }
-                let batch = Batch {
-                    projection: p.name().into(),
-                    version: p.version(),
-                    from: at.position,
-                    to,
-                    ops,
-                    dead,
-                    stop,
-                };
-                match self.store.apply_projection(batch).await {
-                    Ok(()) => {
-                        at.position = to;
-                        at.stopped = stop;
-                    }
-                    Err(StoreError::Conflict(_)) => break,
-                    Err(e) => return Err(e.into()),
-                }
-            }
-        }
-        Ok(done)
-    }
-
-    // ---- reads ----
-
-    pub async fn rows(&self, projection: &str, table: &str) -> Result<Vec<(String, Value)>, Error> {
-        Ok(self.store.rows(projection, table).await?)
-    }
-
-    pub async fn row(
-        &self,
-        projection: &str,
-        table: &str,
-        key: &str,
-    ) -> Result<Option<Value>, Error> {
-        Ok(self.store.row(projection, table, key).await?)
-    }
-
-    pub async fn dead_letters(&self, projection: &str) -> Result<Vec<DeadLetter>, Error> {
-        Ok(self.store.dead_letters(projection).await?)
     }
 }
 

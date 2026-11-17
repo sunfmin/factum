@@ -385,7 +385,10 @@ fn apply_ops(tx: &Transaction, projection: &str, ops: &[RowOp]) -> Result<()> {
     for op in ops {
         let (table, key) = op_target(op);
         if !has_table(tx, projection, table)? {
-            return Err(backend(format!("{projection} has no table {table}")));
+            return Err(StoreError::Undeclared {
+                projection: projection.to_string(),
+                table: table.to_string(),
+            });
         }
         let name = table_name(projection, table);
         match apply_op(read_row(tx, projection, table, key)?, op) {
@@ -723,8 +726,15 @@ impl Store for SqliteStore {
                 })
                 .optional()
                 .map_err(backend)?;
-            if at != Some((i64::from(batch.version), batch.from.1 as i64)) {
-                return Err(StoreError::Conflict(StreamId::new(format!("projection:{}", batch.projection), Uuid::nil())));
+            let mut stale = at != Some((i64::from(batch.version), batch.from.1 as i64));
+            for e in &batch.resolved {
+                stale |= tx
+                    .execute("DELETE FROM dead_letters WHERE projection = ?1 AND event = ?2", params![batch.projection, e.to_string()])
+                    .map_err(backend)?
+                    == 0;
+            }
+            if stale {
+                return Err(StoreError::Stale(batch.projection));
             }
             apply_ops(tx, &batch.projection, &batch.ops)?;
             for d in &batch.dead {
@@ -737,38 +747,6 @@ impl Store for SqliteStore {
             tx.execute(
                 "UPDATE checkpoints SET position = ?2, stopped = ?3 WHERE projection = ?1",
                 params![batch.projection, batch.to.1 as i64, batch.stop],
-            )
-            .map(|_| ())
-            .map_err(backend)
-        })
-        .await
-    }
-
-    async fn resolve_dead_letter(
-        &self,
-        projection: &str,
-        event: Uuid,
-        ops: Vec<RowOp>,
-    ) -> Result<()> {
-        let projection = projection.to_string();
-        self.write(move |tx| {
-            let position: Option<i64> = tx
-                .query_row(
-                    "SELECT position FROM dead_letters WHERE projection = ?1 AND event = ?2",
-                    params![projection, event.to_string()],
-                    |r| r.get(0),
-                )
-                .optional()
-                .map_err(backend)?;
-            let Some(position) = position else {
-                return Err(StoreError::Conflict(StreamId::new(format!("dead-letter:{projection}"), event)));
-            };
-            apply_ops(tx, &projection, &ops)?;
-            tx.execute("DELETE FROM dead_letters WHERE projection = ?1 AND event = ?2", params![projection, event.to_string()])
-                .map_err(backend)?;
-            tx.execute(
-                "UPDATE checkpoints SET position = ?2, stopped = 0 WHERE projection = ?1 AND stopped = 1 AND position < ?2",
-                params![projection, position],
             )
             .map(|_| ())
             .map_err(backend)
