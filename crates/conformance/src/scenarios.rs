@@ -6,8 +6,8 @@ use std::sync::atomic::Ordering;
 use factum::{
     Engine, Event, Finished, Op, Options, Outcome, Query, Store, StreamId, Uuid, Value, Version,
 };
-use factum_core::{WorkChange, start_key, step_key};
-use factum_store::AnswerResult;
+use factum_core::{Work, WorkChange, WorkKind, start_key, step_key};
+use factum_store::{AnswerResult, Unit};
 use serde_json::json;
 
 use crate::domain::{EXPIRES_MS, LIMIT, OrderList, PICKUP_MS, TALLY};
@@ -917,6 +917,116 @@ pub async fn a_wait_times_out<B: Backend>(b: &B) {
         finished(&e, p).await,
         Some(Finished::Failed("not picked up".into()))
     );
+}
+
+// ---- work rows as stores keep them ----
+
+/// Puts `row` in place of the row of its kind and id, as it was written.
+async fn rewrite<S: Store>(store: &S, row: Work) {
+    let unit = Unit {
+        work: vec![
+            WorkChange::Done {
+                kind: row.kind,
+                id: row.id,
+            },
+            WorkChange::Put(row),
+        ],
+        ..Unit::default()
+    };
+    store.commit(unit).await.unwrap();
+}
+
+/// A checkout whose charge is pending, its row's payload set to `payload`.
+async fn charge_stored_as<B: Backend>(w: &World<'_, B>, payload: Value) -> (Engine<B::S>, Uuid) {
+    let e = w.engine("a");
+    w.payments.busy.store(1, Ordering::SeqCst);
+    let (_, p) = checkout(&e, 500).await;
+    e.settle().await.unwrap();
+    let mut row = w
+        .store
+        .work(WorkKind::Action, step_key(p, "charge"))
+        .await
+        .unwrap()
+        .expect("the charge is pending");
+    row.payload = payload;
+    rewrite(&*w.store, Work { lease: None, ..row }).await;
+    w.advance(60_000);
+    (e, p)
+}
+
+/// A pickup whose wait is pending, its row changed by `change`.
+async fn wait_stored_as<B: Backend>(
+    w: &World<'_, B>,
+    change: impl FnOnce(&mut Work),
+) -> (Engine<B::S>, Uuid, Uuid) {
+    let e = w.engine("a");
+    let o = place(&e, 5).await;
+    pay(&e, o).await;
+    let p = id();
+    e.start("pickup", p, json!({ "order": o }), ann())
+        .await
+        .unwrap();
+    e.settle().await.unwrap();
+    let mut row = w
+        .store
+        .work(WorkKind::Await, step_key(p, "closed"))
+        .await
+        .unwrap()
+        .expect("the wait is pending");
+    change(&mut row);
+    rewrite(&*w.store, Work { lease: None, ..row }).await;
+    e.submit(sub("order.close", json!({ "order": o })))
+        .await
+        .unwrap();
+    (e, p, o)
+}
+
+pub async fn work_rows_in_the_stored_shape_still_run<B: Backend>(b: &B) {
+    let w = World::new(b);
+    let (e, p) = charge_stored_as(
+        &w,
+        json!({ "params": { "amount": 500 }, "at_most_once": false }),
+    )
+    .await;
+    e.settle().await.unwrap();
+    assert!(matches!(
+        finished(&e, p).await,
+        Some(Finished::Completed(_))
+    ));
+    assert_eq!(w.payments.charges(), 1);
+
+    let w = World::new(b);
+    let (e, p, _) = wait_stored_as(&w, |row| row.payload = json!({ "event": "OrderClosed" })).await;
+    e.settle().await.unwrap();
+    assert!(matches!(
+        finished(&e, p).await,
+        Some(Finished::Completed(_))
+    ));
+}
+
+fn fault<T: std::fmt::Debug>(result: Result<T, factum::Error>) {
+    assert!(
+        matches!(result, Err(factum::Error::Fault(_))),
+        "expected a fault, got {result:?}"
+    );
+}
+
+pub async fn a_work_row_that_does_not_decode_is_a_fault<B: Backend>(b: &B) {
+    for payload in [
+        json!({ "params": { "amount": 500 } }),
+        json!({ "params": { "amount": 500 }, "at_most_once": "no" }),
+        json!({ "at_most_once": false }),
+    ] {
+        let w = World::new(b);
+        let (e, _) = charge_stored_as(&w, payload).await;
+        fault(e.settle().await);
+    }
+    let w = World::new(b);
+    let (e, _, _) = wait_stored_as(&w, |row| row.payload = json!({ "kind": "OrderClosed" })).await;
+    fault(e.settle().await);
+    let w = World::new(b);
+    let (e, _, _) = wait_stored_as(&w, |row| row.process = None).await;
+    fault(e.settle().await);
 }
 
 // ---- projections ----

@@ -24,7 +24,9 @@ pub use process::{
     advance, check_sample,
 };
 pub use query::{Filter, Op, Order, Query, Scalar, Table, answer, compare, holds, is_name};
-pub use work::{SCHEDULE_RAN, SCHEDULED, Work, WorkChange, WorkKind, effects, schedule_stream};
+pub use work::{
+    Call, SCHEDULE_RAN, SCHEDULED, Wait, Work, WorkChange, WorkKind, effects, schedule_stream,
+};
 
 pub use serde_json::Value;
 pub use uuid::Uuid;
