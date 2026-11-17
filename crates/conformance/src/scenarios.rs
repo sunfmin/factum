@@ -3,7 +3,9 @@
 
 use std::sync::atomic::Ordering;
 
-use factum::{Engine, Event, Finished, Options, Outcome, Store, StreamId, Uuid, Value, Version};
+use factum::{
+    Engine, Event, Finished, Op, Options, Outcome, Query, Store, StreamId, Uuid, Value, Version,
+};
 use factum_core::{start_key, step_key};
 use serde_json::json;
 
@@ -1038,4 +1040,281 @@ impl<B: Backend, S: Store> Again<B> for Engine<S> {
     fn engine_again(&self, w: &World<'_, B>) -> Engine<B::S> {
         w.engine("again")
     }
+}
+
+// ---- queries ----
+
+pub async fn queries_filter_and_order_by_declared_columns<B: Backend>(b: &B) {
+    let w = World::new(b);
+    let e = w.engine("a");
+    let o1 = place(&e, 500).await;
+    let o2 = place(&e, 700).await;
+    let o3 = place(&e, 300).await;
+    let o4 = place(&e, 900).await;
+    pay(&e, o2).await;
+    e.settle().await.unwrap();
+    let keys = |rows: Vec<(String, Value)>| rows.into_iter().map(|r| r.0).collect::<Vec<_>>();
+    let s = |o: Uuid| o.to_string();
+
+    let placed = Query::table("orders")
+        .filter("status", Op::Eq, "placed")
+        .order_by("total", true);
+    assert_eq!(
+        keys(e.query("orders", &placed).await.unwrap()),
+        [s(o4), s(o1), s(o3)]
+    );
+    assert_eq!(
+        keys(e.query("orders", &placed.clone().limit(2)).await.unwrap()),
+        [s(o4), s(o1)]
+    );
+    let big = Query::table("orders")
+        .filter("total", Op::Ge, 500)
+        .order_by("total", false);
+    assert_eq!(
+        keys(e.query("orders", &big).await.unwrap()),
+        [s(o1), s(o2), s(o4)]
+    );
+    let between = Query::table("orders")
+        .filter("total", Op::Gt, 300)
+        .filter("total", Op::Lt, 900);
+    assert_eq!(keys(e.query("orders", &between).await.unwrap()).len(), 2);
+    // Numbers sort before text, null before both, as in SQLite.
+    let below_text = Query::table("orders").filter("total", Op::Lt, "a");
+    assert_eq!(e.query("orders", &below_text).await.unwrap().len(), 4);
+    let null = Query::table("orders").filter("total", Op::Ne, Value::Null);
+    assert!(
+        e.query("orders", &null).await.unwrap().is_empty(),
+        "a comparison with null never holds"
+    );
+
+    let undeclared = Query::table("orders").filter("customer", Op::Eq, "ann");
+    assert_eq!(
+        refused(e.query("orders", &undeclared).await),
+        "invalid_query"
+    );
+    assert_eq!(
+        refused(e.query("orders", &Query::table("strays")).await),
+        "invalid_query"
+    );
+}
+
+pub async fn a_change_to_a_projections_tables_rebuilds_it<B: Backend>(b: &B) {
+    let w = World::with_orders(
+        b,
+        OrderList {
+            fails_on: Some(13),
+            ..OrderList::default()
+        },
+    );
+    let e = w.engine("a");
+    let bad = place(&e, 13).await;
+    e.settle().await.unwrap();
+    assert!(
+        e.row("orders", "orders", &bad.to_string())
+            .await
+            .unwrap()
+            .is_none()
+    );
+
+    let wider = w.engine_with(
+        w.shop(OrderList {
+            with_customer: true,
+            ..OrderList::default()
+        }),
+        "b",
+    );
+    wider.settle().await.unwrap();
+    assert!(
+        wider
+            .row("orders", "orders", &bad.to_string())
+            .await
+            .unwrap()
+            .is_some(),
+        "same version, other tables: rebuilt"
+    );
+    assert!(wider.dead_letters("orders").await.unwrap().is_empty());
+}
+
+pub async fn a_projection_that_writes_an_undeclared_table_fails_the_event<B: Backend>(b: &B) {
+    let w = World::with_orders(
+        b,
+        OrderList {
+            strays_on: Some(7),
+            ..OrderList::default()
+        },
+    );
+    let e = w.engine("a");
+    place(&e, 7).await;
+    place(&e, 8).await;
+    e.settle().await.unwrap();
+    let dead = e.dead_letters("orders").await.unwrap();
+    assert_eq!(dead.len(), 1);
+    assert!(
+        dead[0].error.contains("does not declare"),
+        "{}",
+        dead[0].error
+    );
+    assert_eq!(e.rows("orders", "orders").await.unwrap().len(), 1);
+    assert!(e.rows("orders", "strays").await.unwrap().is_empty());
+}
+
+// ---- dead letters retried ----
+
+pub async fn a_dead_letter_retried_with_fixed_code_is_projected<B: Backend>(b: &B) {
+    let w = World::with_orders(
+        b,
+        OrderList {
+            fails_on: Some(13),
+            ..OrderList::default()
+        },
+    );
+    let e = w.engine("a");
+    let bad = place(&e, 13).await;
+    place(&e, 14).await;
+    e.settle().await.unwrap();
+    let dead = e.dead_letters("orders").await.unwrap()[0].event;
+    assert!(
+        !e.retry_dead_letter("orders", dead).await.unwrap(),
+        "the same code fails again"
+    );
+    assert_eq!(e.dead_letters("orders").await.unwrap().len(), 1);
+
+    let fixed = w.engine_with(w.shop(OrderList::default()), "fixed");
+    assert!(fixed.retry_dead_letter("orders", dead).await.unwrap());
+    assert!(fixed.dead_letters("orders").await.unwrap().is_empty());
+    assert_eq!(
+        fixed
+            .row("orders", "orders", &bad.to_string())
+            .await
+            .unwrap()
+            .unwrap()["total"],
+        13
+    );
+    assert_eq!(
+        refused(fixed.retry_dead_letter("orders", dead).await),
+        "unknown"
+    );
+    fixed.settle().await.unwrap();
+    assert_eq!(
+        fixed.rows("orders", "orders").await.unwrap().len(),
+        2,
+        "not rebuilt: same version, same tables"
+    );
+}
+
+pub async fn a_stopped_projection_goes_on_once_its_dead_letter_is_retried<B: Backend>(b: &B) {
+    let stops = |fails_on| OrderList {
+        fails_on,
+        on_failure: factum::OnFailure::Stop,
+        ..OrderList::default()
+    };
+    let w = World::with_orders(b, stops(Some(13)));
+    let e = w.engine("a");
+    place(&e, 1).await;
+    place(&e, 13).await;
+    place(&e, 14).await;
+    e.settle().await.unwrap();
+    assert_eq!(e.rows("orders", "orders").await.unwrap().len(), 1);
+
+    let fixed = w.engine_with(w.shop(stops(None)), "fixed");
+    let dead = fixed.dead_letters("orders").await.unwrap()[0].event;
+    assert!(fixed.retry_dead_letter("orders", dead).await.unwrap());
+    fixed.settle().await.unwrap();
+    assert_eq!(fixed.rows("orders", "orders").await.unwrap().len(), 3);
+    place(&fixed, 15).await;
+    fixed.settle().await.unwrap();
+    assert_eq!(fixed.rows("orders", "orders").await.unwrap().len(), 4);
+}
+
+// ---- process samples ----
+
+pub async fn a_sample_holds_a_new_next_to_old_progress<B: Backend>(b: &B) {
+    let w = World::new(b);
+    let e = w.engine("a");
+    w.payments.busy.store(1, Ordering::SeqCst);
+    let (_, p) = checkout(&e, 100).await;
+    e.settle().await.unwrap();
+    let sample = e
+        .sample(p, "charging, the first call answered busy")
+        .await
+        .unwrap();
+    let kept: factum::Sample =
+        serde_json::from_str(&serde_json::to_string(&sample).unwrap()).unwrap();
+    assert_eq!(kept, sample);
+
+    assert!(
+        w.shop(OrderList::default())
+            .check_samples(&[kept.clone()])
+            .is_empty()
+    );
+    let renamed = factum::Model::new().process::<crate::domain::CheckoutRenamed>();
+    let mismatches = renamed.check_samples(&[kept.clone()]);
+    assert_eq!(mismatches.len(), 1);
+    assert!(
+        matches!(&mismatches[0].now, Some(factum::Next::Step { key, .. }) if key == "charge-card")
+    );
+    let gone = factum::Model::new().check_samples(&[kept]);
+    assert_eq!(gone[0].now, None);
+}
+
+// ---- runners in parallel ----
+
+pub async fn runners_in_parallel_do_each_thing_once<B: Backend>(b: &B) {
+    let w = World::new(b);
+    let first = w.engine("starter");
+    let mut runs = Vec::new();
+    for _ in 0..20 {
+        runs.push(checkout(&first, 100).await);
+    }
+    let mut handles = Vec::new();
+    for n in 0..4 {
+        let e = std::sync::Arc::new(w.engine(&format!("r{n}")));
+        handles.push(tokio::spawn(async move {
+            for _ in 0..50 {
+                e.tick().await.unwrap();
+                tokio::task::yield_now().await;
+            }
+        }));
+    }
+    for h in handles {
+        h.await.unwrap();
+    }
+    first.settle().await.unwrap();
+    for (o, p) in runs {
+        assert!(
+            matches!(finished(&first, p).await, Some(Finished::Completed(_))),
+            "{p}"
+        );
+        assert_eq!(count(&first, o, "OrderPaid").await, 1);
+    }
+    assert_eq!((w.payments.calls(), w.payments.charges()), (20, 20));
+}
+
+pub async fn writers_in_parallel_keep_versions_unique<B: Backend>(b: &B) {
+    let w = World::new(b);
+    let c = id();
+    let mut handles = Vec::new();
+    for n in 0..4 {
+        let e = w.engine(&format!("w{n}"));
+        handles.push(tokio::spawn(async move {
+            for _ in 0..25 {
+                e.submit(sub("counter.add", json!({ "counter": c, "n": 1 })))
+                    .await
+                    .unwrap();
+            }
+        }));
+    }
+    for h in handles {
+        h.await.unwrap();
+    }
+    let e = w.engine("reader");
+    let history = e.history(&StreamId::new("counter", c)).await.unwrap();
+    assert_eq!(
+        history.iter().map(|ev| ev.version.0).collect::<Vec<_>>(),
+        (1..=100).collect::<Vec<_>>()
+    );
+    assert_eq!(
+        e.state(&StreamId::new("counter", c)).await.unwrap()["total"],
+        100
+    );
 }

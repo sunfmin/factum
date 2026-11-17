@@ -49,7 +49,8 @@ pub enum Finished {
 }
 
 /// What `next` answers.
-#[derive(Clone, Debug, PartialEq)]
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
 pub enum Next {
     Step { key: String, step: Step },
     Finish(Finished),
@@ -292,4 +293,24 @@ pub fn advance(state: &ProcessState, process: &dyn DynProcess) -> Advance {
         }
         Next::Step { key, step } => Advance::Take { key, step },
     }
+}
+
+/// A run of a process as some version of it left it, and what `next`
+/// answered for it then. A new version is held to the samples older ones
+/// left: its `next` must answer each the same, or the runs those versions
+/// left behind would take a step twice or wait forever.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct Sample {
+    /// What the run shows, for the person reading a mismatch.
+    pub name: String,
+    pub process: String,
+    pub input: Value,
+    pub progress: Progress,
+    pub next: Next,
+}
+
+/// What `next` answers a sample now, if that is not what it answered then.
+pub fn check_sample(process: &dyn DynProcess, sample: &Sample) -> Option<Next> {
+    let now = process.next(&sample.input, &sample.progress);
+    (now != sample.next).then_some(now)
 }

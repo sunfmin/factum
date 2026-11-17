@@ -6,8 +6,8 @@
 use std::future::Future;
 
 use factum_core::{
-    Event, Instant, Position, Rejection, RowOp, StreamId, Uuid, Value, Version, Work, WorkChange,
-    WorkKind,
+    Event, Instant, Position, Query, Rejection, RowOp, StreamId, Table, Uuid, Value, Version, Work,
+    WorkChange, WorkKind,
 };
 use serde::{Deserialize, Serialize};
 
@@ -84,6 +84,9 @@ pub struct Snapshot {
 #[derive(Clone, Debug, PartialEq)]
 pub struct Checkpoint {
     pub version: u32,
+    /// The tables the projection declared when it was built, as JSON: a
+    /// change rebuilds it.
+    pub schema: String,
     pub position: Position,
     /// Held at a dead letter, by a projection that stops on failure.
     pub stopped: bool,
@@ -94,6 +97,8 @@ pub struct DeadLetter {
     pub projection: String,
     pub position: Position,
     pub event: Uuid,
+    pub stream: StreamId,
+    pub version: Version,
     pub error: String,
 }
 
@@ -191,9 +196,29 @@ pub trait Store: Send + Sync + 'static {
         &self,
         projection: &str,
         version: u32,
+        schema: &str,
+        tables: &[Table],
     ) -> impl Future<Output = Result<()>> + Send;
 
     fn apply_projection(&self, batch: Batch) -> impl Future<Output = Result<()>> + Send;
+
+    /// Applies the row ops of a dead letter retried with the code running
+    /// now, and removes it. A projection stopped at it moves past it and goes
+    /// on. `Conflict` if there is no such dead letter.
+    fn resolve_dead_letter(
+        &self,
+        projection: &str,
+        event: Uuid,
+        ops: Vec<RowOp>,
+    ) -> impl Future<Output = Result<()>> + Send;
+
+    /// Answers a query over one of the projection's tables. The engine has
+    /// checked that it names only declared columns.
+    fn query(
+        &self,
+        projection: &str,
+        query: &Query,
+    ) -> impl Future<Output = Result<Vec<(String, Value)>>> + Send;
 
     fn rows(
         &self,

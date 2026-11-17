@@ -10,16 +10,19 @@
 mod clock;
 mod engine;
 mod model;
+mod reads;
 mod work;
 
 pub use clock::{Clock, ManualClock, SystemClock};
 pub use engine::{Applied, Engine, Error, Options, ProcessView, Submission};
 pub use model::{ActionAnswer, BoxFuture, Model};
+pub use reads::Mismatch;
 pub use work::ClaimedTask;
 
 pub use factum_core::{
     ActionPolicy, Aggregate, By, Command, Decision, Event, Finished, Instant, NewEvent, Next,
-    OnFailure, Outcome, Process, Progress, Projection, Recurring, Rejection, RetryPolicy, RowOp,
-    StartsOn, Step, StreamId, TaskType, Upcast, Uuid, Value, Version, codes,
+    OnFailure, Op, Outcome, Process, Progress, Projection, Query, Recurring, Rejection,
+    RetryPolicy, RowOp, Sample, StartsOn, Step, StreamId, Table, TaskType, Upcast, Uuid, Value,
+    Version, codes,
 };
 pub use factum_store::{DeadLetter, MemoryStore, Store, StoreError};

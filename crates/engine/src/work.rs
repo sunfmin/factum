@@ -169,7 +169,7 @@ impl<S: Store> Engine<S> {
             {
                 Ok(()) if waits || finishing => break,
                 Ok(()) => continue,
-                Err(StoreError::Conflict(_)) => continue,
+                Err(StoreError::Conflict(_)) => crate::engine::yield_now().await,
                 Err(StoreError::LeaseLost) => return Ok(()),
                 Err(e) => return Err(e.into()),
             }
@@ -235,7 +235,7 @@ impl<S: Store> Engine<S> {
                 .await
             {
                 Ok(()) => return Ok(true),
-                Err(StoreError::Conflict(_)) => continue,
+                Err(StoreError::Conflict(_)) => crate::engine::yield_now().await,
                 Err(StoreError::LeaseLost) => return Ok(false),
                 Err(e) => return Err(e.into()),
             }

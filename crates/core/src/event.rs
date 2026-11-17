@@ -171,4 +171,6 @@ pub mod codes {
     pub const INVALID_PARAMS: &str = "invalid_params";
     /// The task's lease ran out or is another worker's.
     pub const LEASE_LOST: &str = "lease_lost";
+    /// A query names a table or column its projection does not declare.
+    pub const INVALID_QUERY: &str = "invalid_query";
 }

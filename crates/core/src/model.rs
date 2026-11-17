@@ -267,8 +267,11 @@ pub enum RowOp {
 /// Keeps read-model rows from the log. Pure: an event in, row changes out.
 pub trait Projection: Send + Sync + 'static {
     fn name(&self) -> &str;
-    /// A new version drops the rows and rebuilds them from the whole log.
+    /// A new version drops the rows and rebuilds them from the whole log;
+    /// so does a change to its tables.
     fn version(&self) -> u32;
+    /// The tables it writes. A row op on any other table fails the event.
+    fn tables(&self) -> Vec<crate::query::Table>;
     fn on_failure(&self) -> OnFailure {
         OnFailure::Skip
     }

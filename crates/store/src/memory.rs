@@ -5,7 +5,8 @@ use std::collections::{BTreeMap, HashMap};
 use std::sync::Mutex;
 
 use factum_core::{
-    Event, Instant, Position, StreamId, Uuid, Value, Version, Work, WorkChange, WorkKind,
+    Event, Instant, Position, Query, RowOp, StreamId, Table, Uuid, Value, Version, Work,
+    WorkChange, WorkKind,
 };
 
 use crate::{
@@ -296,7 +297,13 @@ impl Store for MemoryStore {
         Ok(self.lock().checkpoints.get(projection).cloned())
     }
 
-    async fn reset_projection(&self, projection: &str, version: u32) -> Result<()> {
+    async fn reset_projection(
+        &self,
+        projection: &str,
+        version: u32,
+        schema: &str,
+        _tables: &[Table],
+    ) -> Result<()> {
         let mut inner = self.lock();
         inner.rows.retain(|(p, _, _), _| p != projection);
         inner.dead.retain(|d| d.projection != projection);
@@ -304,6 +311,7 @@ impl Store for MemoryStore {
             projection.to_string(),
             Checkpoint {
                 version,
+                schema: schema.to_string(),
                 position: Position::default(),
                 stopped: false,
             },
@@ -329,15 +337,52 @@ impl Store for MemoryStore {
             };
         }
         inner.dead.extend(batch.dead);
-        inner.checkpoints.insert(
-            batch.projection.clone(),
-            Checkpoint {
-                version: batch.version,
-                position: batch.to,
-                stopped: batch.stop,
-            },
-        );
+        if let Some(c) = inner.checkpoints.get_mut(&batch.projection) {
+            c.position = batch.to;
+            c.stopped = batch.stop;
+        }
         Ok(())
+    }
+
+    async fn resolve_dead_letter(
+        &self,
+        projection: &str,
+        event: Uuid,
+        ops: Vec<RowOp>,
+    ) -> Result<()> {
+        let mut inner = self.lock();
+        let Some(i) = inner
+            .dead
+            .iter()
+            .position(|d| d.projection == projection && d.event == event)
+        else {
+            return Err(StoreError::Conflict(StreamId::new(
+                format!("dead-letter:{projection}"),
+                event,
+            )));
+        };
+        let dead = inner.dead.remove(i);
+        for op in &ops {
+            let (table, key) = op_target(op);
+            let k = (projection.to_string(), table.to_string(), key.to_string());
+            match apply_op(inner.rows.remove(&k), op) {
+                Some(row) => inner.rows.insert(k, row),
+                None => None,
+            };
+        }
+        if let Some(c) = inner.checkpoints.get_mut(projection)
+            && c.stopped
+            && dead.position > c.position
+        {
+            c.position = dead.position;
+            c.stopped = false;
+        }
+        Ok(())
+    }
+
+    async fn query(&self, projection: &str, query: &Query) -> Result<Vec<(String, Value)>> {
+        let rows = self.rows(projection, &query.table).await?;
+        Ok(factum_core::answer(rows, query))
     }
 
     async fn rows(&self, projection: &str, table: &str) -> Result<Vec<(String, Value)>> {

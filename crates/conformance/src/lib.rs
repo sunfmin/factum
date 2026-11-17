@@ -176,11 +176,19 @@ macro_rules! suite {
             a_projection_that_stops_holds_until_rebuilt,
             old_events_are_read_in_their_current_shape,
             snapshots_change_no_answer,
+            queries_filter_and_order_by_declared_columns,
+            a_change_to_a_projections_tables_rebuilds_it,
+            a_projection_that_writes_an_undeclared_table_fails_the_event,
+            a_dead_letter_retried_with_fixed_code_is_projected,
+            a_stopped_projection_goes_on_once_its_dead_letter_is_retried,
+            a_sample_holds_a_new_next_to_old_progress,
+            runners_in_parallel_do_each_thing_once,
+            writers_in_parallel_keep_versions_unique,
         );
     };
     (@each $backend:expr; $($name:ident),* $(,)?) => {
         $(
-            #[tokio::test]
+            #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
             async fn $name() {
                 $crate::scenarios::$name(&$backend).await;
             }

@@ -8,7 +8,7 @@ use std::sync::atomic::{AtomicU32, Ordering};
 use factum::{
     ActionAnswer, ActionPolicy, Aggregate, By, Command, Decision, Event, Instant, Model, Next,
     OnFailure, Outcome, Process, Progress, Projection, Recurring, Rejection, RetryPolicy, RowOp,
-    StartsOn, StreamId, TaskType, Upcast, Uuid, Value,
+    StartsOn, StreamId, Table, TaskType, Upcast, Uuid, Value,
 };
 use serde::{Deserialize, Serialize};
 use serde_json::json;
@@ -574,6 +574,10 @@ pub struct OrderList {
     /// Fails on orders of this total.
     pub fails_on: Option<i64>,
     pub on_failure: OnFailure,
+    /// For orders of this total, also writes a table it does not declare.
+    pub strays_on: Option<i64>,
+    /// Declares one more column, changing its tables.
+    pub with_customer: bool,
 }
 
 impl Default for OrderList {
@@ -582,6 +586,8 @@ impl Default for OrderList {
             version: 1,
             fails_on: None,
             on_failure: OnFailure::Skip,
+            strays_on: None,
+            with_customer: false,
         }
     }
 }
@@ -592,6 +598,13 @@ impl Projection for OrderList {
     }
     fn version(&self) -> u32 {
         self.version
+    }
+    fn tables(&self) -> Vec<Table> {
+        let mut columns = vec!["status", "total", "currency"];
+        if self.with_customer {
+            columns.push("customer");
+        }
+        vec![Table::new("orders", &columns).index(&["status", "total"])]
     }
     fn on_failure(&self) -> OnFailure {
         self.on_failure
@@ -607,6 +620,13 @@ impl Projection for OrderList {
             fields: json!({ "status": s }),
         };
         Ok(match e.kind.as_str() {
+            "OrderPlaced" if Some(e.data["total"].as_i64().unwrap_or(0)) == self.strays_on => {
+                vec![RowOp::Put {
+                    table: "strays".into(),
+                    key,
+                    row: json!({}),
+                }]
+            }
             "OrderPlaced" => {
                 if Some(e.data["total"].as_i64().unwrap_or(0)) == self.fails_on {
                     return Err("cannot list this order".into());
@@ -702,4 +722,23 @@ pub fn shop(
         model = model.task(t);
     }
     model
+}
+
+/// Checkout as a later version declares it: its first step has another key,
+/// so the runs the old version left would charge again.
+pub struct CheckoutRenamed;
+
+impl Process for CheckoutRenamed {
+    const NAME: &'static str = "checkout";
+    type Input = Checkout;
+    fn next(i: &Checkout, p: &Progress) -> Next {
+        match p.outcome("charge-card") {
+            None => Next::call(
+                "charge-card",
+                "payment.charge",
+                json!({ "order": i.order, "amount": i.total }),
+            ),
+            Some(_) => Next::complete(json!("done")),
+        }
+    }
 }

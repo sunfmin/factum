@@ -7,6 +7,7 @@ mod event;
 mod keys;
 mod model;
 mod process;
+mod query;
 mod work;
 
 pub use event::{
@@ -19,8 +20,10 @@ pub use model::{
     aggregate_of, command_of, process_of,
 };
 pub use process::{
-    Advance, Finished, Next, Outcome, PROCESS, ProcessEvent, ProcessState, Progress, Step, advance,
+    Advance, Finished, Next, Outcome, PROCESS, ProcessEvent, ProcessState, Progress, Sample, Step,
+    advance, check_sample,
 };
+pub use query::{Filter, Op, Order, Query, Scalar, Table, answer, compare, holds, is_name};
 pub use work::{SCHEDULE_RAN, SCHEDULED, Work, WorkChange, WorkKind, effects, schedule_stream};
 
 pub use serde_json::Value;

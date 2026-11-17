@@ -1,3 +1,4 @@
+use factum_core::is_name;
 use std::collections::BTreeMap;
 use std::future::Future;
 use std::pin::Pin;
@@ -91,7 +92,34 @@ impl Model {
         self
     }
 
+    /// Declares a projection. Its name, tables and columns must be names (a
+    /// letter, then letters, digits or underscores), and each index must name
+    /// declared columns; a declaration that breaks this is a programming
+    /// error, and panics.
     pub fn projection(mut self, projection: impl Projection) -> Model {
+        let name = projection.name().to_string();
+        assert!(is_name(&name), "projection name {name:?} is not a name");
+        for t in projection.tables() {
+            assert!(
+                is_name(&t.name),
+                "{name}: table name {:?} is not a name",
+                t.name
+            );
+            for c in &t.columns {
+                assert!(
+                    is_name(c),
+                    "{name}.{}: column name {c:?} is not a name",
+                    t.name
+                );
+            }
+            for i in t.indexes.iter().flatten() {
+                assert!(
+                    t.columns.contains(i),
+                    "{name}.{}: index on undeclared column {i}",
+                    t.name
+                );
+            }
+        }
         self.projections.push(Box::new(projection));
         self
     }
