@@ -1,0 +1,14 @@
+[package]
+name = "factum-core"
+description = "The pure half of factum: events, streams, keys, decide, next and the work they imply"
+version.workspace = true
+edition.workspace = true
+repository.workspace = true
+
+[dependencies]
+serde.workspace = true
+serde_json.workspace = true
+uuid.workspace = true
+
+[lints]
+workspace = true

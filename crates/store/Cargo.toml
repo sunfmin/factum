@@ -1,0 +1,15 @@
+[package]
+name = "factum-store"
+description = "The store contract factum's engine writes through, and an in-memory store"
+version.workspace = true
+edition.workspace = true
+repository.workspace = true
+
+[dependencies]
+factum-core.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+uuid.workspace = true
+
+[lints]
+workspace = true

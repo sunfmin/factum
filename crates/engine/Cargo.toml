@@ -1,0 +1,19 @@
+[package]
+name = "factum"
+description = "An event-sourced engine: submit commands, run processes, deliver actions, hand tasks to workers, run schedules, keep projections"
+version.workspace = true
+edition.workspace = true
+repository.workspace = true
+
+[lib]
+name = "factum"
+
+[dependencies]
+factum-core.workspace = true
+factum-store.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+uuid.workspace = true
+
+[lints]
+workspace = true

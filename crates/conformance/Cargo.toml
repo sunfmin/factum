@@ -1,0 +1,21 @@
+[package]
+name = "factum-conformance"
+description = "The scenarios every factum store must pass, run through the engine's public API"
+version.workspace = true
+edition.workspace = true
+repository.workspace = true
+publish = false
+
+[dependencies]
+factum.workspace = true
+factum-core.workspace = true
+factum-store.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+tokio.workspace = true
+
+[lints]
+workspace = true
+
+[dev-dependencies]
+tokio = { workspace = true, features = ["rt", "macros"] }
