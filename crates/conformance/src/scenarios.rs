@@ -7,6 +7,7 @@ use factum::{
     Engine, Event, Finished, Op, Options, Outcome, Query, Store, StreamId, Uuid, Value, Version,
 };
 use factum_core::{start_key, step_key};
+use factum_store::AnswerResult;
 use serde_json::json;
 
 use crate::domain::{EXPIRES_MS, LIMIT, OrderList, PICKUP_MS, TALLY};
@@ -145,6 +146,37 @@ pub async fn a_key_replays_its_first_answer_and_refuses_reuse<B: Backend>(b: &B)
         .unwrap();
     assert_eq!(refused(e.submit(early).await), "not_placed");
     assert_eq!(status(&e, later).await, "placed");
+}
+
+pub async fn a_refusal_that_loses_its_key_answers_what_the_key_holds<B: Backend>(b: &B) {
+    let w = World::new(b);
+    let (a, flaky) = w.flaky("a");
+    let other = w.engine("b");
+    let o = id();
+    let s = sub("order.pay", json!({ "order": o, "charge": "cash" }));
+    let rival = s.clone();
+    // A refuses the payment, but before it records the refusal another
+    // writer places the order and pays it under the same key.
+    flaky.race_on(
+        |u| {
+            u.answer
+                .as_ref()
+                .is_some_and(|(_, a)| matches!(a.result, AnswerResult::Rejected(_)))
+        },
+        Box::pin(async move {
+            other
+                .submit(sub("order.place", json!({ "order": o, "total": 100 })))
+                .await
+                .unwrap();
+            other.submit(rival).await.unwrap();
+        }),
+    );
+    let first = a.submit(s.clone()).await.unwrap();
+    let again = w.engine("c").submit(s.clone()).await.unwrap();
+    assert!(again.replayed);
+    assert_eq!(first.events, again.events);
+    assert_eq!(kinds(&first.events), ["OrderPaid"]);
+    assert_eq!(count(&a, o, "OrderPaid").await, 1);
 }
 
 pub async fn a_plan_records_nothing<B: Backend>(b: &B) {
