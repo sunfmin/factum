@@ -270,6 +270,28 @@ pub async fn an_ended_stream_refuses_every_command<B: Backend>(b: &B) {
     assert_eq!(status(&e, o).await, "closed");
 }
 
+pub async fn a_stream_ended_by_a_scheduling_command_stays_ended<B: Backend>(b: &B) {
+    let w = World::new(b);
+    let e = w.engine("a");
+    let o = place(&e, 5).await;
+    pay(&e, o).await;
+    e.submit(sub("order.close_and_remind", json!({ "order": o })))
+        .await
+        .unwrap();
+    assert_eq!(
+        kinds(&e.history(&order(o)).await.unwrap()).last(),
+        Some(&"CommandScheduled")
+    );
+    assert_eq!(
+        refused(
+            e.submit(sub("order.cancel", json!({ "order": o, "reason": "x" })))
+                .await
+        ),
+        "ended"
+    );
+    assert_eq!(status(&e, o).await, "closed");
+}
+
 // ---- schedules ----
 
 pub async fn a_scheduled_command_runs_once_when_due<B: Backend>(b: &B) {
