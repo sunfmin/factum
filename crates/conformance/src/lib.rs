@@ -174,6 +174,8 @@ macro_rules! suite {
             a_wait_ends_when_its_event_arrives,
             a_wait_for_an_event_already_recorded_ends_at_once,
             a_wait_times_out,
+            work_rows_in_the_stored_shape_still_run,
+            a_work_row_that_does_not_decode_is_a_fault,
             projection_rows_follow_the_log_and_rebuild_the_same,
             a_projection_skips_an_event_it_fails_on,
             two_projectors_apply_each_event_once,

@@ -4,7 +4,7 @@
 //! not.
 
 use serde::{Deserialize, Serialize};
-use serde_json::{Value, json};
+use serde_json::Value;
 use uuid::Uuid;
 
 use crate::event::{Event, Instant, StreamId};
@@ -101,6 +101,86 @@ impl Work {
     }
 }
 
+/// What an action row carries: the call's params, and whether it may be
+/// made at most once.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct Call {
+    pub params: Value,
+    pub at_most_once: bool,
+}
+
+/// What a wait row carries besides its stream (the row's name).
+#[derive(Serialize, Deserialize)]
+struct AwaitPayload {
+    event: String,
+}
+
+/// A wait row, read: the process and step it answers, and the event on
+/// the stream it waits for.
+#[derive(Clone, Debug, PartialEq)]
+pub struct Wait {
+    pub process: Uuid,
+    pub step: String,
+    pub stream: StreamId,
+    pub event: String,
+}
+
+fn encode<T: Serialize>(payload: T) -> Value {
+    serde_json::to_value(payload).expect("a payload is plain JSON")
+}
+
+/// The payload of a work row is written by `effects` and read only here:
+/// a row that does not decode is an error, never a default.
+impl Work {
+    fn expect_kind(&self, kind: WorkKind) -> Result<(), String> {
+        if self.kind == kind {
+            Ok(())
+        } else {
+            Err(format!(
+                "{} row {} read as {}",
+                self.kind.as_str(),
+                self.id,
+                kind.as_str()
+            ))
+        }
+    }
+
+    fn bad(&self, why: impl std::fmt::Display) -> String {
+        format!(
+            "{} row {} does not decode: {why}",
+            self.kind.as_str(),
+            self.id
+        )
+    }
+
+    /// An action row's call.
+    pub fn call(&self) -> Result<Call, String> {
+        self.expect_kind(WorkKind::Action)?;
+        Call::deserialize(&self.payload).map_err(|e| self.bad(e))
+    }
+
+    /// A wait row's process, step, stream and event.
+    pub fn wait(&self) -> Result<Wait, String> {
+        self.expect_kind(WorkKind::Await)?;
+        let p = AwaitPayload::deserialize(&self.payload).map_err(|e| self.bad(e))?;
+        Ok(Wait {
+            process: self.process.ok_or_else(|| self.bad("no process"))?,
+            step: self.step.clone().ok_or_else(|| self.bad("no step"))?,
+            stream: StreamId::try_from(self.name.clone()).map_err(|e| self.bad(e))?,
+            event: p.event,
+        })
+    }
+
+    /// A task row's input, or a schedule row's command params: the
+    /// payload as it was given.
+    pub fn input(&self) -> Result<&Value, String> {
+        if self.kind != WorkKind::Schedule {
+            self.expect_kind(WorkKind::Task)?;
+        }
+        Ok(&self.payload)
+    }
+}
+
 /// A change to the work rows, committed with the events it follows from.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub enum WorkChange {
@@ -173,7 +253,10 @@ pub fn effects(event: &Event) -> Vec<WorkChange> {
                     at_most_once,
                 } => {
                     let mut w = Work::new(WorkKind::Action, id, action, now);
-                    w.payload = json!({ "params": params, "at_most_once": at_most_once });
+                    w.payload = encode(Call {
+                        params,
+                        at_most_once,
+                    });
                     w
                 }
                 Step::Queue {
@@ -193,7 +276,7 @@ pub fn effects(event: &Event) -> Vec<WorkChange> {
                 } => {
                     let mut w =
                         Work::new(WorkKind::Await, id, stream.to_string(), now.plus(within_ms));
-                    w.payload = json!({ "event": kind });
+                    w.payload = encode(AwaitPayload { event: kind });
                     w
                 }
             };

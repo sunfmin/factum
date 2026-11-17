@@ -277,15 +277,13 @@ impl<S: Store> Engine<S> {
             .work_named(WorkKind::Await, &e.stream.to_string())
             .await?
         {
-            if row.payload.get("event").and_then(Value::as_str) == Some(e.kind.as_str()) {
-                let (Some(process), Some(step)) = (row.process, row.step.as_deref()) else {
-                    continue;
-                };
-                let by = By::Process(StreamId::new(PROCESS, process));
+            let wait = row.wait().map_err(Error::Fault)?;
+            if wait.event == e.kind {
+                let by = By::Process(StreamId::new(PROCESS, wait.process));
                 if self
                     .answer_step(
-                        process,
-                        step,
+                        wait.process,
+                        &wait.step,
                         Outcome::Ok(event_json(e)),
                         &by,
                         now,
@@ -308,18 +306,12 @@ impl<S: Store> Engine<S> {
             .await?;
         let count = rows.len();
         for row in rows {
-            let on = StreamId::try_from(row.name.clone()).map_err(Error::Fault)?;
-            let kind = row
-                .payload
-                .get("event")
-                .and_then(Value::as_str)
-                .unwrap_or_default()
-                .to_string();
-            let outcome = match self.first_event(&on, &kind).await? {
+            let wait = row.wait().map_err(Error::Fault)?;
+            let outcome = match self.first_event(&wait.stream, &wait.event).await? {
                 Some(found) => Outcome::Ok(found),
                 None => Outcome::TimedOut,
             };
-            let by = By::Process(StreamId::new(PROCESS, row.process.unwrap_or_default()));
+            let by = By::Process(StreamId::new(PROCESS, wait.process));
             self.answer_row(&row, outcome, &by, now, &[]).await?;
         }
         Ok(count)
@@ -339,18 +331,13 @@ impl<S: Store> Engine<S> {
             for row in self.store.claim(claim).await? {
                 count += 1;
                 let by = By::Action(name.clone());
-                let at_most_once = row
-                    .payload
-                    .get("at_most_once")
-                    .and_then(Value::as_bool)
-                    .unwrap_or(false);
-                if row.taken_over && at_most_once {
+                let call = row.call().map_err(Error::Fault)?;
+                if row.taken_over && call.at_most_once {
                     self.answer_row(&row, Outcome::Unknown, &by, now, &[])
                         .await?;
                     continue;
                 }
-                let params = row.payload.get("params").cloned().unwrap_or(Value::Null);
-                let outcome = match (def.call)(row.id, params).await {
+                let outcome = match (def.call)(row.id, call.params).await {
                     ActionAnswer::Done(v) => Outcome::Ok(v),
                     ActionAnswer::Rejected(r) => Outcome::Rejected(r),
                     ActionAnswer::Permanent(e) => Outcome::Failed(e),
@@ -404,7 +391,7 @@ impl<S: Store> Engine<S> {
         for row in rows {
             let sub = Submission {
                 command: row.name.clone(),
-                params: row.payload.clone(),
+                params: row.input().map_err(Error::Fault)?.clone(),
                 key: schedule_key(row.id),
                 by: By::Schedule(row.id),
             };
@@ -496,10 +483,11 @@ impl<S: Store> Engine<S> {
                 .await?;
                 continue;
             }
+            let input = row.input().map_err(Error::Fault)?.clone();
             return Ok(Some(ClaimedTask {
                 id: row.id,
                 task_type: row.name,
-                input: row.payload,
+                input,
                 lease: row.lease.expect("a claimed row has a lease"),
                 attempt: row.attempts,
                 process: row.process,
