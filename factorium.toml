@@ -1,0 +1,7 @@
+# How factorium gates factum. A library, not a Homebrew formula: no [cut].
+
+[gate]
+fast = "./gate.sh"
+fast_limit = 900
+slow = "./gate.sh"
+slow_limit = 900

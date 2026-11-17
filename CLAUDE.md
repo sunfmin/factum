@@ -15,3 +15,13 @@
   clippy with warnings denied, every scenario on every store.
 - Key derivations in `crates/core/src/keys.rs` are bizkernel's byte for
   byte; changing one breaks the keys already in logs.
+
+## Agent skills
+
+### Issue tracker
+
+Issues live in factorium's local tracker (`factorium issue … factum`). See `docs/agents/issue-tracker.md`.
+
+### Domain docs
+
+single-context, with `SPEC.md` as the glossary and the record of decisions. See `docs/agents/domain.md`.
