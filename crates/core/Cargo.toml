@@ -3,6 +3,7 @@ name = "factum-core"
 description = "The pure half of factum: events, streams, keys, decide, next and the work they imply"
 version.workspace = true
 edition.workspace = true
+rust-version.workspace = true
 repository.workspace = true
 
 [dependencies]

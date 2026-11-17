@@ -3,6 +3,7 @@ name = "factum-conformance"
 description = "The scenarios every factum store must pass, run through the engine's public API"
 version.workspace = true
 edition.workspace = true
+rust-version.workspace = true
 repository.workspace = true
 publish = false
 

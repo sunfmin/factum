@@ -15,6 +15,7 @@ pub struct Flaky<S> {
     inner: Arc<S>,
     crash: Mutex<Option<Matches>>,
     race: Mutex<Option<(Matches, BoxFuture<()>)>>,
+    batch_race: Mutex<Option<(String, BoxFuture<()>)>>,
 }
 
 impl<S: Store> Flaky<S> {
@@ -23,7 +24,14 @@ impl<S: Store> Flaky<S> {
             inner,
             crash: Mutex::new(None),
             race: Mutex::new(None),
+            batch_race: Mutex::new(None),
         }
+    }
+
+    /// Before the next catch-up batch of `projection`, `writer` runs to
+    /// completion, as another projector that got there first.
+    pub fn race_on_batch(&self, projection: &str, writer: BoxFuture<()>) {
+        *self.batch_race.lock().unwrap() = Some((projection.to_string(), writer));
     }
 
     /// The next commit that matches fails, writing nothing, as if the
@@ -126,6 +134,17 @@ impl<S: Store> Store for Flaky<S> {
         self.inner.reset_projection(projection, version).await
     }
     async fn apply_projection(&self, batch: Batch) -> Result<()> {
+        let writer = {
+            let mut r = self.batch_race.lock().unwrap();
+            if r.as_ref().is_some_and(|(p, _)| *p == batch.projection) {
+                r.take().map(|(_, w)| w)
+            } else {
+                None
+            }
+        };
+        if let Some(writer) = writer {
+            writer.await;
+        }
         self.inner.apply_projection(batch).await
     }
     async fn rows(&self, projection: &str, table: &str) -> Result<Vec<(String, Value)>> {

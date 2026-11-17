@@ -25,6 +25,9 @@ pub trait Backend: Sync {
     fn reopen(&self, store: &Arc<Self::S>) -> Arc<Self::S>;
 }
 
+/// A runner on a flaky handle, and the handle to cue it with.
+pub type FlakyRunner<S> = (Engine<Flaky<S>>, Arc<Flaky<S>>);
+
 /// When every scenario starts: 2026-01-01T00:00:00Z.
 pub const START: Instant = Instant(1_767_225_600_000);
 
@@ -89,7 +92,7 @@ impl<'a, B: Backend> World<'a, B> {
     }
 
     /// A runner whose store crashes or races on cue.
-    pub fn flaky(&self, holder: &str) -> (Engine<Flaky<B::S>>, Arc<Flaky<B::S>>) {
+    pub fn flaky(&self, holder: &str) -> FlakyRunner<B::S> {
         let flaky = Arc::new(Flaky::new(self.backend.reopen(&self.store)));
         (
             Engine::new(
@@ -169,6 +172,7 @@ macro_rules! suite {
             a_wait_times_out,
             projection_rows_follow_the_log_and_rebuild_the_same,
             a_projection_skips_an_event_it_fails_on,
+            two_projectors_apply_each_event_once,
             a_projection_that_stops_holds_until_rebuilt,
             old_events_are_read_in_their_current_shape,
             snapshots_change_no_answer,

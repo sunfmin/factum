@@ -629,6 +629,11 @@ pub async fn a_task_whose_lease_ran_out_is_taken_over<B: Backend>(b: &B) {
     let (_, p) = fulfilling(&e).await;
     let first = e.claim_task("pack", "w1", 10_000).await.unwrap().unwrap();
     w.advance(10_000);
+    assert_eq!(
+        refused(e.heartbeat(&first, 10_000).await),
+        "lease_lost",
+        "a lease that ran out is not renewed, taken over or not"
+    );
     let second = e.claim_task("pack", "w2", 10_000).await.unwrap().unwrap();
     assert_eq!(second.attempt, 2);
     assert_eq!(refused(e.heartbeat(&first, 10_000).await), "lease_lost");
@@ -869,6 +874,33 @@ pub async fn a_projection_skips_an_event_it_fails_on<B: Backend>(b: &B) {
     let dead = e.dead_letters("orders").await.unwrap();
     assert_eq!(dead.len(), 1);
     assert_eq!(dead[0].event, e.history(&order(bad)).await.unwrap()[0].id);
+}
+
+pub async fn two_projectors_apply_each_event_once<B: Backend>(b: &B) {
+    let w = World::with_orders(
+        b,
+        OrderList {
+            fails_on: Some(13),
+            ..OrderList::default()
+        },
+    );
+    let (a, flaky) = w.flaky("a");
+    place(&a, 13).await;
+    place(&a, 14).await;
+    let other = w.engine("b");
+    flaky.race_on_batch(
+        "orders",
+        Box::pin(async move {
+            other.settle().await.unwrap();
+        }),
+    );
+    a.settle().await.unwrap();
+    assert_eq!(a.rows("orders", "orders").await.unwrap().len(), 1);
+    assert_eq!(
+        a.dead_letters("orders").await.unwrap().len(),
+        1,
+        "the batch read before b caught up applies nothing"
+    );
 }
 
 pub async fn a_projection_that_stops_holds_until_rebuilt<B: Backend>(b: &B) {

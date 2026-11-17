@@ -1,0 +1,23 @@
+[package]
+name = "factum-sqlite"
+description = "factum's store on SQLite: one database file, one writer at a time"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+repository.workspace = true
+
+[dependencies]
+factum-core.workspace = true
+factum-store.workspace = true
+rusqlite.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+uuid.workspace = true
+
+[dev-dependencies]
+factum.workspace = true
+factum-conformance.workspace = true
+tokio = { workspace = true, features = ["rt", "macros"] }
+
+[lints]
+workspace = true

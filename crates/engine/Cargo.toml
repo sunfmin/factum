@@ -3,6 +3,7 @@ name = "factum"
 description = "An event-sourced engine: submit commands, run processes, deliver actions, hand tasks to workers, run schedules, keep projections"
 version.workspace = true
 edition.workspace = true
+rust-version.workspace = true
 repository.workspace = true
 
 [lib]
