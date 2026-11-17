@@ -177,7 +177,8 @@ impl Store for MemoryStore {
         Ok(inner
             .streams
             .get(stream)
-            .map_or(Vec::new(), |e| e[after.0 as usize..].to_vec()))
+            .and_then(|e| e.get(after.0 as usize..))
+            .map_or(Vec::new(), <[Event]>::to_vec))
     }
 
     async fn answer(&self, key: Uuid) -> Result<Option<Answer>> {

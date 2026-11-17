@@ -141,6 +141,7 @@ macro_rules! suite {
             commands_record_and_fold,
             unknown_commands_and_bad_params_are_refused,
             a_key_replays_its_first_answer_and_refuses_reuse,
+            a_fault_is_no_answer_and_the_key_decides_again,
             a_refusal_that_loses_its_key_answers_what_the_key_holds,
             a_plan_records_nothing,
             a_writer_that_read_an_old_version_decides_again,

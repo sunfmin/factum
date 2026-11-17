@@ -4,7 +4,8 @@
 use std::sync::atomic::Ordering;
 
 use factum::{
-    Engine, Event, Finished, Op, Options, Outcome, Query, Store, StreamId, Uuid, Value, Version,
+    Engine, Error, Event, Finished, Op, Options, Outcome, Query, Store, StreamId, Uuid, Value,
+    Version,
 };
 use factum_core::{WorkChange, start_key, step_key};
 use factum_store::AnswerResult;
@@ -103,6 +104,8 @@ pub async fn commands_record_and_fold<B: Backend>(b: &B) {
         (&ann(), w.clock.now_(), Some(s.key), "order.place")
     );
     assert!(history[0].position < history[1].position);
+    let past_end = e.store().read_stream(&order(o), Version(5)).await;
+    assert!(past_end.unwrap().is_empty(), "nothing after the last event");
 }
 
 pub async fn unknown_commands_and_bad_params_are_refused<B: Backend>(b: &B) {
@@ -146,6 +149,27 @@ pub async fn a_key_replays_its_first_answer_and_refuses_reuse<B: Backend>(b: &B)
         .unwrap();
     assert_eq!(refused(e.submit(early).await), "not_placed");
     assert_eq!(status(&e, later).await, "placed");
+}
+
+pub async fn a_fault_is_no_answer_and_the_key_decides_again<B: Backend>(b: &B) {
+    let w = World::new(b);
+    let buggy = w.engine_with(
+        factum::Model::new().command::<crate::domain::unreadable::AddUnreadable>(),
+        "buggy",
+    );
+    let c = id();
+    let s = sub("counter.add", json!({ "counter": c, "n": 3 }));
+    for _ in 0..2 {
+        let faulted = buggy.submit(s.clone()).await;
+        assert!(matches!(faulted, Err(Error::Fault(_))), "{faulted:?}");
+    }
+    assert!(w.store.answer(s.key).await.unwrap().is_none());
+
+    let fixed = w.engine("fixed");
+    let applied = fixed.submit(s).await.unwrap();
+    assert!(!applied.replayed, "the key decided again");
+    let state = fixed.state(&StreamId::new("counter", c)).await.unwrap();
+    assert_eq!(state["total"], 3);
 }
 
 pub async fn a_refusal_that_loses_its_key_answers_what_the_key_holds<B: Backend>(b: &B) {

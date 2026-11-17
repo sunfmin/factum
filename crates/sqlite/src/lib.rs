@@ -195,37 +195,69 @@ fn events(conn: &Connection, sql: &str, args: impl rusqlite::Params) -> Result<V
 
 const WORK_COLUMNS: &str = "kind, id, name, process, step, payload, due, ordering_key, attempts, lease, holder, lease_until, claimed_at, seq";
 
-fn work(row: &Row) -> rusqlite::Result<(Work, i64)> {
-    let id = |i: usize| -> rusqlite::Result<Option<Uuid>> {
-        Ok(row
-            .get::<_, Option<String>>(i)?
-            .and_then(|s| Uuid::parse_str(&s).ok()))
-    };
-    let kind: String = row.get(0)?;
-    let payload: String = row.get(5)?;
-    let w = Work {
-        kind: WorkKind::parse(&kind).unwrap_or(WorkKind::Advance),
-        id: id(1)?.unwrap_or_default(),
+/// A work row as read, before its columns are decoded.
+struct WorkRow {
+    kind: String,
+    id: String,
+    process: Option<String>,
+    lease: Option<String>,
+    name: String,
+    step: Option<String>,
+    payload: String,
+    due: i64,
+    ordering_key: Option<String>,
+    attempts: i64,
+    holder: Option<String>,
+    lease_until: Option<i64>,
+    claimed_at: Option<i64>,
+    seq: i64,
+}
+
+fn work(row: &Row) -> rusqlite::Result<WorkRow> {
+    Ok(WorkRow {
+        kind: row.get(0)?,
+        id: row.get(1)?,
+        process: row.get(3)?,
+        lease: row.get(9)?,
         name: row.get(2)?,
-        process: id(3)?,
         step: row.get(4)?,
-        payload: serde_json::from_str(&payload).unwrap_or(Value::Null),
-        due: Instant(row.get(6)?),
+        payload: row.get(5)?,
+        due: row.get(6)?,
         ordering_key: row.get(7)?,
-        attempts: row.get::<_, i64>(8)? as u32,
-        lease: id(9)?,
+        attempts: row.get(8)?,
         holder: row.get(10)?,
-        lease_until: row.get::<_, Option<i64>>(11)?.map(Instant),
-        claimed_at: row.get::<_, Option<i64>>(12)?.map(Instant),
+        lease_until: row.get(11)?,
+        claimed_at: row.get(12)?,
+        seq: row.get(13)?,
+    })
+}
+
+/// A work row decoded; a column it cannot decode is an error, never a guess.
+fn to_work(r: WorkRow) -> Result<(Work, i64)> {
+    let w = Work {
+        kind: WorkKind::parse(&r.kind)
+            .ok_or_else(|| backend(format!("work row of unknown kind {:?}", r.kind)))?,
+        id: uuid(&r.id)?,
+        name: r.name,
+        process: r.process.as_deref().map(uuid).transpose()?,
+        step: r.step,
+        payload: parse(&r.payload)?,
+        due: Instant(r.due),
+        ordering_key: r.ordering_key,
+        attempts: r.attempts as u32,
+        lease: r.lease.as_deref().map(uuid).transpose()?,
+        holder: r.holder,
+        lease_until: r.lease_until.map(Instant),
+        claimed_at: r.claimed_at.map(Instant),
         taken_over: false,
     };
-    Ok((w, row.get(13)?))
+    Ok((w, r.seq))
 }
 
 fn works(conn: &Connection, sql: &str, args: impl rusqlite::Params) -> Result<Vec<(Work, i64)>> {
     let mut stmt = conn.prepare(sql).map_err(backend)?;
     let rows = stmt.query_map(args, work).map_err(backend)?;
-    rows.map(|r| r.map_err(backend)).collect()
+    rows.map(|r| r.map_err(backend).and_then(to_work)).collect()
 }
 
 fn lease_of(tx: &Transaction, kind: WorkKind, id: Uuid) -> Result<Option<String>> {

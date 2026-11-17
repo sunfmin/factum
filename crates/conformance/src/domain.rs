@@ -364,6 +364,48 @@ impl<A: Aggregate<State = Counter, Event = CounterEvent>> Command for AddTo<A> {
 
 pub type AddCounter = AddTo<Counters>;
 
+/// A counter whose code has a bug: its state does not read back what it
+/// writes, so every decide on it fails before the command is decided.
+pub mod unreadable {
+    use super::*;
+
+    #[derive(Default, Serialize, Deserialize)]
+    pub struct Unreadable {
+        #[serde(skip_serializing)]
+        pub total: i64,
+    }
+
+    pub struct UnreadableCounters;
+
+    impl Aggregate for UnreadableCounters {
+        const NAME: &'static str = "counter";
+        type State = Unreadable;
+        type Event = CounterEvent;
+        fn evolve(state: &mut Unreadable, CounterEvent::Added { n }: CounterEvent) {
+            state.total += n;
+        }
+    }
+
+    pub struct AddUnreadable;
+
+    impl Command for AddUnreadable {
+        const NAME: &'static str = "counter.add";
+        type Aggregate = UnreadableCounters;
+        type Params = Add;
+        fn stream(p: &Add) -> Uuid {
+            p.counter
+        }
+        fn decide(
+            _: &Unreadable,
+            p: &Add,
+            _: &By,
+            _: Instant,
+        ) -> Result<Decision<CounterEvent>, Rejection> {
+            Ok(vec![CounterEvent::Added { n: p.n }].into())
+        }
+    }
+}
+
 /// The counter the recurring tally adds to.
 pub const TALLY: Uuid = Uuid::from_u128(0x7a11);
 
