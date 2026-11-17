@@ -168,6 +168,7 @@ macro_rules! suite {
             an_at_most_once_task_whose_lease_ran_out_ends_unknown,
             a_heartbeat_never_holds_a_task_past_its_timeout,
             tasks_with_one_ordering_key_run_one_at_a_time_paced,
+            a_crash_between_a_tasks_answer_and_its_pace_loses_no_pace,
             a_cancelled_task_ends_its_step_cancelled,
             a_wait_ends_when_its_event_arrives,
             a_wait_for_an_event_already_recorded_ends_at_once,

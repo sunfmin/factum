@@ -2,14 +2,14 @@
 //! actions, handing tasks to workers, running schedules and waits.
 
 use factum_core::{
-    Advance, By, Event, Instant, Outcome, PROCESS, ProcessEvent, SCHEDULE_RAN, Step, StreamId,
-    Uuid, Value, Version, Work, WorkChange, WorkKind, advance, codes, recurring_key, schedule_key,
-    schedule_stream, step_key,
+    Advance, By, Event, Instant, Meta, NewEvent, Outcome, PROCESS, ProcessEvent, SCHEDULE_RAN,
+    Step, StreamId, Uuid, Value, Version, Work, WorkChange, WorkKind, advance, codes,
+    recurring_key, schedule_key, schedule_stream, step_key,
 };
-use factum_store::{Append, Claim, Store, StoreError, Unit};
+use factum_store::{Claim, Store, StoreError, Unit};
 use serde_json::json;
 
-use crate::engine::{Engine, Error, Submission, rejected};
+use crate::engine::{Engine, Error, Submission, Write, rejected};
 use crate::model::ActionAnswer;
 
 /// A task a worker holds.
@@ -184,8 +184,16 @@ impl<S: Store> Engine<S> {
         )) = state.pending()
             && let Some(found) = self.first_event(on, event).await?
         {
-            self.answer_step(id, key, Outcome::Ok(found), &By::Process(stream), now, None)
-                .await?;
+            self.answer_step(
+                id,
+                key,
+                Outcome::Ok(found),
+                &By::Process(stream),
+                now,
+                None,
+                &[],
+            )
+            .await?;
         }
         Ok(())
     }
@@ -198,8 +206,10 @@ impl<S: Store> Engine<S> {
         }
     }
 
-    /// Records a step's outcome, unless it has one already. With a lease,
-    /// only while that lease still holds the step's row.
+    /// Records a step's outcome, with `work` in the same commit, unless it
+    /// has one already. With a lease, only while that lease still holds the
+    /// step's row.
+    #[allow(clippy::too_many_arguments)]
     async fn answer_step(
         &self,
         process: Uuid,
@@ -208,6 +218,7 @@ impl<S: Store> Engine<S> {
         by: &By,
         now: Instant,
         guard: Option<(WorkKind, Uuid)>,
+        work: &[WorkChange],
     ) -> Result<bool, Error> {
         loop {
             let (state, version) = self.process_events(process).await?;
@@ -229,7 +240,7 @@ impl<S: Store> Engine<S> {
                     vec![recorded],
                     by,
                     now,
-                    Vec::new(),
+                    work.to_vec(),
                     guards,
                 )
                 .await
@@ -248,12 +259,13 @@ impl<S: Store> Engine<S> {
         outcome: Outcome,
         by: &By,
         now: Instant,
+        work: &[WorkChange],
     ) -> Result<bool, Error> {
         let (Some(process), Some(step)) = (row.process, row.step.as_deref()) else {
             return Ok(false);
         };
         let guard = row.lease.map(|l| (row.kind, l));
-        self.answer_step(process, step, outcome, by, now, guard)
+        self.answer_step(process, step, outcome, by, now, guard, work)
             .await
     }
 
@@ -271,7 +283,15 @@ impl<S: Store> Engine<S> {
                 };
                 let by = By::Process(StreamId::new(PROCESS, process));
                 if self
-                    .answer_step(process, step, Outcome::Ok(event_json(e)), &by, now, None)
+                    .answer_step(
+                        process,
+                        step,
+                        Outcome::Ok(event_json(e)),
+                        &by,
+                        now,
+                        None,
+                        &[],
+                    )
                     .await?
                 {
                     done += 1;
@@ -300,7 +320,7 @@ impl<S: Store> Engine<S> {
                 None => Outcome::TimedOut,
             };
             let by = By::Process(StreamId::new(PROCESS, row.process.unwrap_or_default()));
-            self.answer_row(&row, outcome, &by, now).await?;
+            self.answer_row(&row, outcome, &by, now, &[]).await?;
         }
         Ok(count)
     }
@@ -325,7 +345,8 @@ impl<S: Store> Engine<S> {
                     .and_then(Value::as_bool)
                     .unwrap_or(false);
                 if row.taken_over && at_most_once {
-                    self.answer_row(&row, Outcome::Unknown, &by, now).await?;
+                    self.answer_row(&row, Outcome::Unknown, &by, now, &[])
+                        .await?;
                     continue;
                 }
                 let params = row.payload.get("params").cloned().unwrap_or(Value::Null);
@@ -342,7 +363,7 @@ impl<S: Store> Engine<S> {
                         continue;
                     }
                 };
-                self.answer_row(&row, outcome, &by, now).await?;
+                self.answer_row(&row, outcome, &by, now, &[]).await?;
             }
         }
         Ok(count)
@@ -392,33 +413,24 @@ impl<S: Store> Engine<S> {
                 Err(Error::Rejected(r)) => json!({ "ok": false, "rejection": r }),
                 Err(e) => return Err(e),
             };
-            let stream = schedule_stream(row.id);
-            let ran = Event {
-                id: Uuid::now_v7(),
-                stream: stream.clone(),
-                version: Version(1),
-                kind: SCHEDULE_RAN.to_string(),
-                type_version: 1,
-                data: outcome,
-                meta: factum_core::Meta {
+            let ran = Write {
+                stream: schedule_stream(row.id),
+                expected: Version(0),
+                events: vec![NewEvent {
+                    kind: SCHEDULE_RAN.to_string(),
+                    data: outcome,
+                }],
+                meta: Meta {
                     now,
                     by: By::Schedule(row.id),
                     key: Some(schedule_key(row.id)),
                     command: row.name.clone(),
                 },
-                position: Default::default(),
+                fingerprint: None,
+                work: Vec::new(),
+                guards: Vec::new(),
             };
-            let work = factum_core::effects(&ran);
-            let unit = Unit {
-                appends: vec![Append {
-                    stream,
-                    expected: Version(0),
-                    events: vec![ran],
-                }],
-                work,
-                ..Unit::default()
-            };
-            match self.store.commit(unit).await {
+            match self.write(ran).await {
                 Ok(_) | Err(StoreError::Conflict(_)) => {}
                 Err(e) => return Err(e.into()),
             }
@@ -554,7 +566,8 @@ impl<S: Store> Engine<S> {
         Ok(())
     }
 
-    /// Answers a task's step and paces its ordering key.
+    /// Answers a task's step and, in the same commit, paces its ordering
+    /// key: no next task of the key runs before its interval.
     async fn finish_row(
         &self,
         row: &Work,
@@ -562,25 +575,18 @@ impl<S: Store> Engine<S> {
         by: &By,
         now: Instant,
     ) -> Result<bool, Error> {
-        let answered = self.answer_row(row, outcome, by, now).await?;
-        if answered
-            && let Some(key) = &row.ordering_key
+        let mut pace = Vec::new();
+        if let Some(key) = &row.ordering_key
             && let Some(tt) = self.model.tasks.get(&row.name)
             && tt.key_interval_ms > 0
         {
-            let pace = WorkChange::Pace {
+            pace.push(WorkChange::Pace {
                 name: row.name.clone(),
                 key: key.clone(),
                 not_before: now.plus(tt.key_interval_ms),
-            };
-            self.store
-                .commit(Unit {
-                    work: vec![pace],
-                    ..Unit::default()
-                })
-                .await?;
+            });
         }
-        Ok(answered)
+        self.answer_row(row, outcome, by, now, &pace).await
     }
 
     async fn held(&self, task: &ClaimedTask) -> Result<Work, Error> {
