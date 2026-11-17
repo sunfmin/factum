@@ -4,7 +4,7 @@
 use std::sync::{Arc, Mutex};
 
 use factum::{BoxFuture, Instant, StreamId, Uuid, Value, Version};
-use factum_core::{Event, Position, Query, RowOp, Table, Work, WorkKind};
+use factum_core::{Event, Position, Query, Table, Work, WorkKind};
 use factum_store::{
     Answer, Batch, Checkpoint, Claim, DeadLetter, Result, Snapshot, Store, StoreError, Unit,
 };
@@ -140,14 +140,6 @@ impl<S: Store> Store for Flaky<S> {
         self.inner
             .reset_projection(projection, version, schema, tables)
             .await
-    }
-    async fn resolve_dead_letter(
-        &self,
-        projection: &str,
-        event: Uuid,
-        ops: Vec<RowOp>,
-    ) -> Result<()> {
-        self.inner.resolve_dead_letter(projection, event, ops).await
     }
     async fn query(&self, projection: &str, query: &Query) -> Result<Vec<(String, Value)>> {
         self.inner.query(projection, query).await

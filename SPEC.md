@@ -25,7 +25,7 @@ approval and an entry here.
 | 6 | **Action** | A call to another system, requested by a step through an **outbox**: the request and its delivery row commit together. Delivered at least once under the step's key, or **at most once**, in which case a call whose answer was lost ends `Unknown` for `next` to reconcile. Each action declares its retry schedule (attempts, backoff, factor, cap, jitter) and timeout. |
 | 7 | **Task** | Long work a step queues and a **worker** pulls: claim under a lease, heartbeat to keep it (never past the type's timeout), result or failure. Declared attempts and backoff; may be done at most once; may be cancelled; may carry an **ordering key** (one at a time per key, in order, paced). |
 | 8 | **Schedule** | A decide asks for a command later by returning a `CommandScheduled`; it runs once its time comes, under `UUIDv5(event, "scheduled")`, and its outcome, a refusal included, is recorded and not retried. A **recurring** command runs once per period, under a key derived from its name and the period. |
-| 9 | **Projection** | Pure code that turns each event into row changes (put, merge, delete) of the tables it **declares**: rows are JSON objects under a key; declared columns are what **queries** filter (`= <> < <= > >=`) and order by, and declared indexes make them fast. It reads only **final** events in commit order; rows and checkpoint move together. A new version, or any change to its tables, rebuilds it from the whole log. An event it fails on, or that writes an undeclared table, becomes a **dead letter**: skipped, or (declared `stop`) held there. A dead letter is **retried** with the code running now; a projection stopped at it then goes on. |
+| 9 | **Projection** | Pure code that turns each event into row changes (put, merge, delete) of the tables it **declares**: rows are JSON objects under a key; declared columns are what **queries** filter (`= <> < <= > >=`) and order by, and declared indexes make them fast. It reads only **final** events in commit order; rows and checkpoint move together. It is **current** when it was built by the code running now: same version, same tables. A new version, or any change to its tables, makes it not current, and the engine's loop rebuilds it from the whole log; a read never writes, and reads one that is not current as not yet built (no rows, no dead letters). An event it fails on, or that writes an undeclared table, becomes a **dead letter**: skipped, or (declared `stop`) held there. A dead letter of a current projection is **retried** with the code running now: its rows and its removal are one batch, like a catch-up, and a projection stopped at it then goes on. |
 | 10 | **Snapshot** | A stream's state at a version, kept by the code that folded it and read only by that code. Derived: no answer depends on it. |
 | 11 | **Sample** | A run of a process as some version left it — input, progress — and what `next` answered for it then. Taken from a running process, kept beside the code, and checked against a new version: a `next` that answers otherwise would make old runs take a step twice or wait forever. |
 
@@ -55,7 +55,7 @@ store seeded from the first).
 |---|---|---|
 | `factum-core` | The pure half: events, streams, keys, the typed and erased traits a program implements (aggregate, command, process, projection), process folding and `advance`, work rows and `effects`, retry arithmetic. No IO, no async, no clock. | 5,000 |
 | `factum-store` | The `Store` trait (§3) and the in-memory store, the reference every other store is held to. | 3,000 |
-| `factum` | The engine: `submit`, `plan`, `state`, `history`, `start`, `process`; `tick` / `settle` (dispatch, advance, deliver, run due, end waits, project); the worker API (`claim_task`, `heartbeat`, `finish_task`, `cancel_task`); `query`, `retry_dead_letter`; `sample` and `Model::check_samples`; the clock. Generic over `Store`; async, on no particular runtime; its futures are `Send`. | 5,000 |
+| `factum` | The engine: `submit`, `plan`, `state`, `history`, `start`, `process`; `tick` / `settle` (dispatch, advance, deliver, run due, end waits, project); the worker API (`claim_task`, `heartbeat`, `finish_task`, `cancel_task`); `query`, `rows`, `row`, `dead_letters`, `retry_dead_letter`; `sample` and `Model::check_samples`; the clock. Generic over `Store`; async, on no particular runtime; its futures are `Send`. | 5,000 |
 | `factum-sqlite` | `Store` on SQLite: one file, writers take turns (`BEGIN IMMEDIATE`); each handle's connection on a thread of its own, so no call blocks the caller's runtime; each projection table a table of its own, declared columns generated from the row and indexed. | 3,000 |
 | `factum-postgres` | `Store` on Postgres, extracted from bizkernel, many writers. Not built yet. | 3,000 |
 | `factum-conformance` | The scenarios every store must pass (§4). Not published. | — |
@@ -84,11 +84,15 @@ short transaction; none holds a lock while the caller works.
   `work_named(kind, name)`.
 - A wake that comes while a row is claimed survives the claim's release.
 - `snapshot` / `keep_snapshot`; `checkpoint` / `reset_projection` /
-  `apply_projection` (refused unless the checkpoint is where the batch
-  began); `resolve_dead_letter` (a retried dead letter's rows, and a
-  stopped projection moved past it); `query`, `rows`, `row`, `dead_letters`.
-  A checkpoint keeps the tables it was built with; `reset_projection` drops
-  a projection's rows and dead letters and makes its declared tables anew.
+  `apply_projection`; `query`, `rows`, `row`, `dead_letters`. A batch is
+  one move of a projection — rows, new dead letters, retried dead letters
+  removed, checkpoint — all of it or none: `Stale` unless the checkpoint is
+  where the batch began and every dead letter it removes is there,
+  `Undeclared` if a row op names a table the projection was not built
+  with. A checkpoint keeps the tables it was built with;
+  `reset_projection` drops a projection's rows and dead letters and makes
+  its declared tables anew. Whether a projection is current, and where a
+  retry moves a stopped one, the engine decides, not the store.
 
 A row a store cannot decode is an error, never a guessed value.
 
@@ -164,6 +168,11 @@ rate limits; archiving old months of the log; branches; read replicas.
   them with an index.
 - **A dead letter is retried in place** with the code running now; a
   rebuild still clears them all.
+- **A read never rebuilds.** Rebuilding drops rows, so only the loop does
+  it; every read (`query`, `rows`, `row`, `dead_letters`, a retry) takes a
+  projection as it stands and answers one built by other code as not yet
+  built. A read thus never serves, nor a retry writes to, rows another
+  version made.
 - **Samples are taken from running processes** and checked by the model,
   without a store: holding a new `next` to old progress is a pure check.
 

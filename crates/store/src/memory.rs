@@ -5,8 +5,8 @@ use std::collections::{BTreeMap, HashMap};
 use std::sync::Mutex;
 
 use factum_core::{
-    Event, Instant, Position, Query, RowOp, StreamId, Table, Uuid, Value, Version, Work,
-    WorkChange, WorkKind,
+    Event, Instant, Position, Query, StreamId, Table, Uuid, Value, Version, Work, WorkChange,
+    WorkKind,
 };
 
 use crate::{
@@ -42,6 +42,8 @@ struct Inner {
     paces: HashMap<(String, String), Instant>,
     snapshots: HashMap<StreamId, Snapshot>,
     checkpoints: HashMap<String, Checkpoint>,
+    /// The tables each projection was last built with.
+    tables: HashMap<String, Vec<String>>,
     rows: BTreeMap<(String, String, String), Value>,
     dead: Vec<DeadLetter>,
 }
@@ -303,10 +305,12 @@ impl Store for MemoryStore {
         projection: &str,
         version: u32,
         schema: &str,
-        _tables: &[Table],
+        tables: &[Table],
     ) -> Result<()> {
         let mut inner = self.lock();
         inner.rows.retain(|(p, _, _), _| p != projection);
+        let names = tables.iter().map(|t| t.name.clone()).collect();
+        inner.tables.insert(projection.to_string(), names);
         inner.dead.retain(|d| d.projection != projection);
         inner.checkpoints.insert(
             projection.to_string(),
@@ -322,61 +326,44 @@ impl Store for MemoryStore {
 
     async fn apply_projection(&self, batch: Batch) -> Result<()> {
         let mut inner = self.lock();
-        let at = inner.checkpoints.get(&batch.projection);
-        if at.is_none_or(|c| c.version != batch.version || c.position != batch.from) {
-            return Err(StoreError::Conflict(StreamId::new(
-                format!("projection:{}", batch.projection),
-                Uuid::nil(),
-            )));
+        let p = &batch.projection;
+        let at = inner.checkpoints.get(p);
+        let gone = batch.resolved.iter().any(|e| {
+            !inner
+                .dead
+                .iter()
+                .any(|d| d.projection == *p && d.event == *e)
+        });
+        if gone || at.is_none_or(|c| c.version != batch.version || c.position != batch.from) {
+            return Err(StoreError::Stale(p.clone()));
+        }
+        let declared = inner.tables.get(p).map_or(&[][..], Vec::as_slice);
+        if let Some((table, _)) = batch
+            .ops
+            .iter()
+            .map(op_target)
+            .find(|(t, _)| !declared.iter().any(|d| d == t))
+        {
+            return Err(StoreError::Undeclared {
+                projection: p.clone(),
+                table: table.to_string(),
+            });
         }
         for op in &batch.ops {
             let (table, key) = op_target(op);
-            let k = (batch.projection.clone(), table.to_string(), key.to_string());
+            let k = (p.clone(), table.to_string(), key.to_string());
             match apply_op(inner.rows.remove(&k), op) {
                 Some(row) => inner.rows.insert(k, row),
                 None => None,
             };
         }
+        inner
+            .dead
+            .retain(|d| d.projection != *p || !batch.resolved.contains(&d.event));
         inner.dead.extend(batch.dead);
-        if let Some(c) = inner.checkpoints.get_mut(&batch.projection) {
+        if let Some(c) = inner.checkpoints.get_mut(p) {
             c.position = batch.to;
             c.stopped = batch.stop;
-        }
-        Ok(())
-    }
-
-    async fn resolve_dead_letter(
-        &self,
-        projection: &str,
-        event: Uuid,
-        ops: Vec<RowOp>,
-    ) -> Result<()> {
-        let mut inner = self.lock();
-        let Some(i) = inner
-            .dead
-            .iter()
-            .position(|d| d.projection == projection && d.event == event)
-        else {
-            return Err(StoreError::Conflict(StreamId::new(
-                format!("dead-letter:{projection}"),
-                event,
-            )));
-        };
-        let dead = inner.dead.remove(i);
-        for op in &ops {
-            let (table, key) = op_target(op);
-            let k = (projection.to_string(), table.to_string(), key.to_string());
-            match apply_op(inner.rows.remove(&k), op) {
-                Some(row) => inner.rows.insert(k, row),
-                None => None,
-            };
-        }
-        if let Some(c) = inner.checkpoints.get_mut(projection)
-            && c.stopped
-            && dead.position > c.position
-        {
-            c.position = dead.position;
-            c.stopped = false;
         }
         Ok(())
     }
