@@ -2,8 +2,8 @@ use std::sync::Arc;
 
 use factum_core::{
     By, DynAggregate, Event, Finished, Instant, Meta, NewEvent, OnFailure, PROCESS, ProcessEvent,
-    ProcessState, Progress, Rejection, Step, StreamId, Table, Uuid, Value, Version, codes, effects,
-    fingerprint, start_key,
+    ProcessState, Progress, Rejection, Step, StreamId, Table, Uuid, Value, Version, WorkChange,
+    WorkKind, codes, effects, fingerprint, start_key,
 };
 use factum_store::{
     Answer, AnswerResult, Append, Batch, Checkpoint, DeadLetter, Snapshot, Store, StoreError, Unit,
@@ -202,33 +202,21 @@ impl<S: Store> Engine<S> {
                 Err(e) => return Err(e),
             };
             let (loaded, new) = decided;
-            let events = self.events(
-                &stream,
-                loaded.version,
-                agg,
-                new,
-                &sub.by,
-                Some(sub.key),
-                &sub.command,
-                now,
-            );
-            let unit = Unit {
-                appends: vec![Append {
-                    stream: stream.clone(),
-                    expected: loaded.version,
-                    events: events.clone(),
-                }],
-                answer: Some((
-                    sub.key,
-                    Answer {
-                        fingerprint: print,
-                        result: AnswerResult::Applied(events.clone()),
-                    },
-                )),
-                work: events.iter().flat_map(effects).collect(),
+            let write = Write {
+                stream: stream.clone(),
+                expected: loaded.version,
+                events: new,
+                meta: Meta {
+                    now,
+                    by: sub.by.clone(),
+                    key: Some(sub.key),
+                    command: sub.command.clone(),
+                },
+                fingerprint: Some(print),
+                work: Vec::new(),
                 guards: Vec::new(),
             };
-            match self.store.commit(unit).await {
+            match self.write(write).await {
                 Ok(committed) => {
                     self.keep_snapshot(agg, &stream, loaded, &committed).await?;
                     return Ok(Applied {
@@ -291,39 +279,56 @@ impl<S: Store> Engine<S> {
         Ok((stream, agg, (loaded, events)))
     }
 
-    #[allow(clippy::too_many_arguments)]
-    fn events(
-        &self,
-        stream: &StreamId,
-        at: Version,
-        agg: &dyn DynAggregate,
-        new: Vec<NewEvent>,
-        by: &By,
-        key: Option<Uuid>,
-        command: &str,
-        now: Instant,
-    ) -> Vec<Event> {
-        let mut version = at;
-        new.into_iter()
+    /// The one way events are written: numbered from `expected`, stamped
+    /// with `meta` and their current type version, and committed with the
+    /// work they imply (`effects`), the work given beside it, its guards
+    /// and, under a fingerprint, as the answer of `meta.key`. Every work row
+    /// a commit changes is thereby implied by an event committed with it.
+    pub(crate) async fn write(&self, w: Write) -> Result<Vec<Event>, StoreError> {
+        let agg = self.model.aggregates.get(&w.stream.aggregate);
+        let mut version = w.expected;
+        let events: Vec<Event> = w
+            .events
+            .into_iter()
             .map(|e| {
                 version = version.next();
                 Event {
                     id: Uuid::now_v7(),
-                    stream: stream.clone(),
+                    stream: w.stream.clone(),
                     version,
-                    type_version: agg.current_version(&e.kind),
+                    type_version: agg.map_or(1, |a| a.current_version(&e.kind)),
                     kind: e.kind,
                     data: e.data,
-                    meta: Meta {
-                        now,
-                        by: by.clone(),
-                        key,
-                        command: command.to_string(),
-                    },
+                    meta: w.meta.clone(),
                     position: Default::default(),
                 }
             })
-            .collect()
+            .collect();
+        let mut work: Vec<WorkChange> = events.iter().flat_map(effects).collect();
+        work.extend(w.work);
+        let answer = w.fingerprint.zip(w.meta.key).map(|(fingerprint, key)| {
+            let result = AnswerResult::Applied(events.clone());
+            (
+                key,
+                Answer {
+                    fingerprint,
+                    result,
+                },
+            )
+        });
+        // Even with no events the append checks the stream is still at
+        // `expected`: the work given was decided on that version.
+        let unit = Unit {
+            appends: vec![Append {
+                stream: w.stream,
+                expected: w.expected,
+                events,
+            }],
+            answer,
+            work,
+            guards: w.guards,
+        };
+        self.store.commit(unit).await
     }
 
     pub(crate) fn aggregate(&self, name: &str) -> Result<&dyn DynAggregate, Error> {
@@ -527,45 +532,31 @@ impl<S: Store> Engine<S> {
         events: Vec<ProcessEvent>,
         by: &By,
         now: Instant,
-        work: Vec<factum_core::WorkChange>,
-        guards: Vec<(factum_core::WorkKind, Uuid, Uuid)>,
+        work: Vec<WorkChange>,
+        guards: Vec<(WorkKind, Uuid, Uuid)>,
     ) -> Result<(), StoreError> {
-        let stream = StreamId::new(PROCESS, id);
-        let mut version = expected;
-        let events: Vec<Event> = events
+        let events = events
             .into_iter()
-            .map(|e| {
-                version = version.next();
-                Event {
-                    id: Uuid::now_v7(),
-                    stream: stream.clone(),
-                    version,
-                    kind: e.kind().to_string(),
-                    type_version: 1,
-                    data: e.data(),
-                    meta: Meta {
-                        now,
-                        by: by.clone(),
-                        key: None,
-                        command: PROCESS.to_string(),
-                    },
-                    position: Default::default(),
-                }
+            .map(|e| NewEvent {
+                kind: e.kind().to_string(),
+                data: e.data(),
             })
             .collect();
-        let mut changes: Vec<_> = events.iter().flat_map(effects).collect();
-        changes.extend(work);
-        let unit = Unit {
-            appends: vec![Append {
-                stream,
-                expected,
-                events,
-            }],
-            answer: None,
-            work: changes,
+        let write = Write {
+            stream: StreamId::new(PROCESS, id),
+            expected,
+            events,
+            meta: Meta {
+                now,
+                by: by.clone(),
+                key: None,
+                command: PROCESS.to_string(),
+            },
+            fingerprint: None,
+            work,
             guards,
         };
-        self.store.commit(unit).await.map(|_| ())
+        self.write(write).await.map(|_| ())
     }
 
     // ---- the loops ----
@@ -748,6 +739,20 @@ impl<S: Store> Engine<S> {
     pub async fn dead_letters(&self, projection: &str) -> Result<Vec<DeadLetter>, Error> {
         Ok(self.store.dead_letters(projection).await?)
     }
+}
+
+/// Events for one stream and what commits with them: see [`Engine::write`].
+pub(crate) struct Write {
+    pub stream: StreamId,
+    pub expected: Version,
+    pub events: Vec<NewEvent>,
+    pub meta: Meta,
+    /// Keeps the events as the answer of `meta.key`, under this fingerprint.
+    pub fingerprint: Option<Uuid>,
+    /// Work beside the events' effects, such as a release or a pace.
+    pub work: Vec<WorkChange>,
+    /// Rows that must still be held under these leases.
+    pub guards: Vec<(WorkKind, Uuid, Uuid)>,
 }
 
 pub(crate) struct Loaded {

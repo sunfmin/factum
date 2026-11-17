@@ -6,7 +6,7 @@ use std::sync::atomic::Ordering;
 use factum::{
     Engine, Event, Finished, Op, Options, Outcome, Query, Store, StreamId, Uuid, Value, Version,
 };
-use factum_core::{start_key, step_key};
+use factum_core::{WorkChange, start_key, step_key};
 use serde_json::json;
 
 use crate::domain::{EXPIRES_MS, LIMIT, OrderList, PICKUP_MS, TALLY};
@@ -728,6 +728,54 @@ pub async fn tasks_with_one_ordering_key_run_one_at_a_time_paced<B: Backend>(b: 
     w.advance(10_000);
     let second = e.claim_task("deliver", "w", 10_000).await.unwrap().unwrap();
     assert_eq!(second.input["order"], json!(o2));
+}
+
+pub async fn a_crash_between_a_tasks_answer_and_its_pace_loses_no_pace<B: Backend>(b: &B) {
+    let w = World::new(b);
+    let (e, flaky) = w.flaky("a");
+    for o in [id(), id()] {
+        e.start(
+            "delivery",
+            id(),
+            json!({ "order": o, "store": "tokyo" }),
+            ann(),
+        )
+        .await
+        .unwrap();
+        e.settle().await.unwrap();
+    }
+    let first = e.claim_task("deliver", "w", 10_000).await.unwrap().unwrap();
+    flaky.crash_on(|u| u.work.iter().any(|c| matches!(c, WorkChange::Pace { .. })));
+    assert!(
+        e.finish_task(&first, Ok(json!("delivered")), "w")
+            .await
+            .is_err()
+    );
+    assert!(
+        e.claim_task("deliver", "w", 10_000)
+            .await
+            .unwrap()
+            .is_none(),
+        "tokyo's second does not run unpaced"
+    );
+    e.finish_task(&first, Ok(json!("delivered")), "w")
+        .await
+        .unwrap();
+    w.advance(9_999);
+    assert!(
+        e.claim_task("deliver", "w", 10_000)
+            .await
+            .unwrap()
+            .is_none(),
+        "tokyo is paced"
+    );
+    w.advance(1);
+    assert!(
+        e.claim_task("deliver", "w", 10_000)
+            .await
+            .unwrap()
+            .is_some()
+    );
 }
 
 pub async fn a_cancelled_task_ends_its_step_cancelled<B: Backend>(b: &B) {
