@@ -210,6 +210,31 @@ impl Command for CloseOrder {
     }
 }
 
+/// Closes a paid order and, in the same decision, schedules a reminder.
+pub struct CloseAndRemind;
+
+impl Command for CloseAndRemind {
+    const NAME: &'static str = "order.close_and_remind";
+    type Aggregate = Orders;
+    type Params = OrderRef;
+    fn stream(p: &OrderRef) -> Uuid {
+        p.order
+    }
+    fn decide(
+        s: &Order,
+        p: &OrderRef,
+        by: &By,
+        now: Instant,
+    ) -> Result<Decision<OrderEvent>, Rejection> {
+        let closed = CloseOrder::decide(s, p, by, now)?;
+        Ok(closed.schedule(
+            now.plus(EXPIRES_MS),
+            "order.close",
+            OrderRef { order: p.order },
+        ))
+    }
+}
+
 fn placed(s: &Order) -> Result<(), Rejection> {
     if s.status == "placed" {
         Ok(())
@@ -681,6 +706,7 @@ pub fn shop(
         .command::<CancelOrder>()
         .command::<ExpireOrder>()
         .command::<CloseOrder>()
+        .command::<CloseAndRemind>()
         .command::<AddCounter>()
         .process::<CheckoutProcess>()
         .process::<ReceiptProcess>()

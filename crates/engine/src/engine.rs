@@ -2,8 +2,8 @@ use std::sync::Arc;
 
 use factum_core::{
     By, DynAggregate, Event, Finished, Instant, Meta, NewEvent, OnFailure, PROCESS, ProcessEvent,
-    ProcessState, Progress, Rejection, Step, StreamId, Table, Uuid, Value, Version, WorkChange,
-    WorkKind, codes, effects, fingerprint, start_key,
+    ProcessState, Progress, Rejection, SCHEDULED, Step, StreamId, Table, Uuid, Value, Version,
+    WorkChange, WorkKind, codes, effects, fingerprint, start_key,
 };
 use factum_store::{
     Answer, AnswerResult, Append, Batch, Checkpoint, DeadLetter, Snapshot, Store, StoreError, Unit,
@@ -194,10 +194,11 @@ impl<S: Store> Engine<S> {
                         ..Unit::default()
                     };
                     match self.store.commit(unit).await {
-                        Ok(_) | Err(StoreError::KeyTaken(_)) => {}
+                        Ok(_) => return Err(Error::Rejected(r)),
+                        // Another writer answered the key first: answer what it holds.
+                        Err(StoreError::KeyTaken(_)) => continue,
                         Err(e) => return Err(e.into()),
                     }
-                    return Err(Error::Rejected(r));
                 }
                 Err(e) => return Err(e),
             };
@@ -360,16 +361,16 @@ impl<S: Store> Engine<S> {
         }
         let state = agg.fold(state, &folded).map_err(Error::Fault)?;
         let version = events.last().map_or(after, |e| e.version);
-        let last_kind = match events.last() {
-            Some(e) => Some(e.kind.clone()),
-            None if after.0 > 0 => self
-                .store
-                .read_stream(stream, Version(after.0 - 1))
-                .await?
-                .first()
-                .map(|e| e.kind.clone()),
-            None => None,
-        };
+        // The last domain event: the engine's own `CommandScheduled` neither
+        // ends a stream nor keeps it open.
+        let domain = |e: &Event| (e.kind != SCHEDULED).then(|| e.kind.clone());
+        let mut last_kind = events.iter().rev().find_map(domain);
+        let mut at = after.0;
+        while last_kind.is_none() && at > 0 {
+            let read = self.store.read_stream(stream, Version(at - 1)).await?;
+            last_kind = read.first().and_then(domain);
+            at -= 1;
+        }
         Ok(Loaded {
             state,
             version,
