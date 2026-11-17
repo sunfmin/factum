@@ -20,7 +20,7 @@ approval and an entry here.
 | 1 | **Event** | A fact: stream, version, stored type name, type version, data (JSON), meta (`now`, `by`, idempotency `key`, `command`), an id (UUIDv7) and, once committed, its position in the log. Never edited. |
 | 2 | **Stream** | `<aggregate>/<uuid>`: the events of one thing, numbered 1, 2, 3… with no gap. An aggregate may declare **ending** event types; a stream whose last event ends it refuses every later command (`ended`). |
 | 3 | **Command** | A named request to change one stream. Its rules are `decide(state, params, by, now) → events \| Rejection`, pure; it may also schedule commands. State is folded from the stream by a pure `evolve`. Older event shapes are **upcast** on read, so decide, evolve and projections see only the current shape. |
-| 4 | **Submission** | A command sent under an idempotency key. The same key with the same command and params answers the first answer, a refusal included; with others it is refused (`key_reused`). A writer that read an old version decides again on fresh state at the same `now`. **Plan** is decide without commit. |
+| 4 | **Submission** | A command sent under an idempotency key. The same key with the same command and params answers the first answer, a refusal included; with others it is refused (`key_reused`). A fault (code that cannot read its state or write an event) is no answer: nothing is kept for the key, and a re-send decides again. A writer that read an old version decides again on fresh state at the same `now`. **Plan** is decide without commit. |
 | 5 | **Process** | Work across streams. Its progress is its own stream, `process/<id>` (`ProcessStarted`, `StepRequested`, `StepRecorded`, `ProcessFinished`, which ends it). `next(input, progress) → Run(command) \| Call(action) \| Queue(task) \| Await(event, within) \| Finish`, pure. A step's key is `UUIDv5(process, step)`, so a step re-run after a crash is replayed, not repeated. A process may start by itself on an event. One runner advances a process at a time, under a lease. |
 | 6 | **Action** | A call to another system, requested by a step through an **outbox**: the request and its delivery row commit together. Delivered at least once under the step's key, or **at most once**, in which case a call whose answer was lost ends `Unknown` for `next` to reconcile. Each action declares its retry schedule (attempts, backoff, factor, cap, jitter) and timeout. |
 | 7 | **Task** | Long work a step queues and a **worker** pulls: claim under a lease, heartbeat to keep it (never past the type's timeout), result or failure. Declared attempts and backoff; may be done at most once; may be cancelled; may carry an **ordering key** (one at a time per key, in order, paced). |
@@ -70,6 +70,7 @@ short transaction; none holds a lock while the caller works.
 
 - `read_stream(stream, after)`; `read_log(after, limit)` — only final
   events, in commit order: no later commit lands before the last returned.
+  An `after` past the stream's end reads nothing.
 - `commit(unit)` — events appended to streams at the versions their writer
   read, the submission's key and answer (kept with the events' positions),
   the work changes the events imply, and lease guards. All of it or none:
@@ -88,6 +89,8 @@ short transaction; none holds a lock while the caller works.
   stopped projection moved past it); `query`, `rows`, `row`, `dead_letters`.
   A checkpoint keeps the tables it was built with; `reset_projection` drops
   a projection's rows and dead letters and makes its declared tables anew.
+
+A row a store cannot decode is an error, never a guessed value.
 
 Each store implements these as its backend allows: SQLite's single writer
 makes commit order the sequence order, and Postgres will need an

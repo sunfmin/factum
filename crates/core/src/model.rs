@@ -295,13 +295,17 @@ pub trait DynCommand: Send + Sync {
     fn name(&self) -> &str;
     fn aggregate(&self) -> &str;
     fn stream(&self, params: &Value) -> Result<Uuid, Rejection>;
+    /// The events the command decides on, or its rejection. The outer error
+    /// is a fault: the code could not read its state or write an event, which
+    /// is no answer to the command.
+    #[allow(clippy::type_complexity)]
     fn decide(
         &self,
         state: &Value,
         params: &Value,
         by: &By,
         now: Instant,
-    ) -> Result<Vec<NewEvent>, Rejection>;
+    ) -> Result<Result<Vec<NewEvent>, Rejection>, String>;
 }
 
 pub trait DynProcess: Send + Sync {
@@ -386,14 +390,20 @@ impl<C: Command> DynCommand for Typed<C> {
         params: &Value,
         by: &By,
         now: Instant,
-    ) -> Result<Vec<NewEvent>, Rejection> {
-        let params = decode_params::<C::Params>(params)?;
-        let state = serde_json::from_value(state.clone())
-            .map_err(|e| Rejection::new("fault", format!("{} state: {e}", C::NAME)))?;
-        let decision = C::decide(&state, &params, by, now)?;
+    ) -> Result<Result<Vec<NewEvent>, Rejection>, String> {
+        let params = match decode_params::<C::Params>(params) {
+            Ok(p) => p,
+            Err(r) => return Ok(Err(r)),
+        };
+        let state =
+            serde_json::from_value(state.clone()).map_err(|e| format!("{} state: {e}", C::NAME))?;
+        let decision = match C::decide(&state, &params, by, now) {
+            Ok(d) => d,
+            Err(r) => return Ok(Err(r)),
+        };
         let mut events = Vec::with_capacity(decision.events.len() + decision.scheduled.len());
         for event in decision.events {
-            events.push(encode_event(&event).map_err(|e| Rejection::new("fault", e))?);
+            events.push(encode_event(&event).map_err(|e| format!("{}: {e}", C::NAME))?);
         }
         for scheduled in decision.scheduled {
             events.push(NewEvent {
@@ -401,7 +411,7 @@ impl<C: Command> DynCommand for Typed<C> {
                 data: json!(scheduled),
             });
         }
-        Ok(events)
+        Ok(Ok(events))
     }
 }
 

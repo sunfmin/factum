@@ -112,6 +112,8 @@ const DISPATCH: &str = "factum.dispatch";
 /// another writer's win, so the log always moves; the bound only keeps one
 /// writer from losing forever.
 const MAX_RETRIES: usize = 1000;
+/// How many ticks `settle` takes before it calls the engine stuck busy.
+const SETTLE_TICKS: usize = 1000;
 
 /// Lets the other tasks run once: a writer that lost a race lets the
 /// winners finish before it decides again. Needs no particular runtime.
@@ -287,6 +289,7 @@ impl<S: Store> Engine<S> {
         }
         let events = command
             .decide(&loaded.state, &sub.params, &sub.by, now)
+            .map_err(Error::Fault)?
             .map_err(Error::Rejected)?;
         Ok((stream, agg, (loaded, events)))
     }
@@ -585,15 +588,17 @@ impl<S: Store> Engine<S> {
         Ok(done)
     }
 
-    /// Ticks until a tick does nothing (at most `rounds` times), without
-    /// moving the clock.
+    /// Ticks until a tick does nothing (at most `SETTLE_TICKS` times),
+    /// without moving the clock.
     pub async fn settle(&self) -> Result<(), Error> {
-        for _ in 0..1000 {
+        for _ in 0..SETTLE_TICKS {
             if self.tick().await? == 0 {
                 return Ok(());
             }
         }
-        Err(Error::Fault("settle: still busy after 1000 ticks".into()))
+        Err(Error::Fault(format!(
+            "settle: still busy after {SETTLE_TICKS} ticks"
+        )))
     }
 
     async fn dispatch(&self, now: Instant) -> Result<usize, Error> {
