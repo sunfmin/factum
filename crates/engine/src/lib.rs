@@ -15,7 +15,7 @@ mod reads;
 mod work;
 
 pub use clock::{Clock, ManualClock, SystemClock};
-pub use engine::{Applied, Engine, Error, Options, ProcessView, Submission};
+pub use engine::{Applied, DISPATCH, Engine, Error, Fault, Options, ProcessView, Submission, Tick};
 pub use model::{ActionAnswer, BoxFuture, Model};
 pub use reads::Mismatch;
 pub use work::ClaimedTask;

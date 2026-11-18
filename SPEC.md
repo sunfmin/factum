@@ -43,6 +43,15 @@ kind in one table beside the log. Every row is implied by an event
 committed with it (one pure function, `effects`), so the rows never say
 what the log does not. Every lease in factum is a claim on such a row.
 
+**A fault in one item stops nothing else.** A tick runs every loop over
+every item even when one faults (its code cannot read an event, a state or
+a row). An event the engine cannot dispatch — start the processes it
+starts, answer the waits on it — becomes a **dead letter** of the dispatch
+checkpoint `factum.dispatch`, read and retried as a projection's are. Any
+other item — a process to advance, an action, a schedule, a recurring
+command, a wait — keeps its row and is tried again once its lease runs out.
+The tick reports each item it set aside; only a store error ends it.
+
 **Values compare as SQLite compares them**, in every store: null before numbers before text; numbers by value; booleans as 0 and 1; objects and arrays as their JSON text; a comparison with null never holds. Results are ordered as asked, then by key.
 
 **Not supported: branches.** The log has one line. A program that wants to
@@ -55,7 +64,7 @@ store seeded from the first).
 |---|---|---|
 | `factum-core` | The pure half: events, streams, keys, the typed and erased traits a program implements (aggregate, command, process, projection), process folding and `advance`, work rows and `effects`, retry arithmetic. No IO, no async, no clock. | 5,000 |
 | `factum-store` | The `Store` trait (§3) and the in-memory store, the reference every other store is held to. | 3,000 |
-| `factum` | The engine: `submit`, `plan`, `state`, `history`, `start`, `process`; `tick` / `settle` (dispatch, advance, deliver, run due, end waits, project); the worker API (`claim_task`, `heartbeat`, `finish_task`, `cancel_task`); `query`, `rows`, `row`, `dead_letters`, `retry_dead_letter`; `sample` and `Model::check_samples`; the clock. Generic over `Store`; async, on no particular runtime; its futures are `Send`. | 5,000 |
+| `factum` | The engine: `submit`, `plan`, `state`, `history`, `start`, `process`; `tick` / `settle` (dispatch, advance, deliver, run due, end waits, project); the worker API (`claim_task`, `heartbeat`, `finish_task`, `cancel_task`); `query`, `rows`, `row`, `dead_letters`, `retry_dead_letter` (of projections and of dispatch); `sample` and `Model::check_samples`; the clock. Generic over `Store`; async, on no particular runtime; its futures are `Send`. | 5,000 |
 | `factum-sqlite` | `Store` on SQLite: one file, writers take turns (`BEGIN IMMEDIATE`); each handle's connection on a thread of its own, so no call blocks the caller's runtime; each projection table a table of its own, declared columns generated from the row and indexed. | 3,000 |
 | `factum-postgres` | `Store` on Postgres, extracted from bizkernel, many writers. Not built yet. | 3,000 |
 | `factum-conformance` | The scenarios every store must pass (§4). Not published. | — |
@@ -173,6 +182,9 @@ rate limits; archiving old months of the log; branches; read replicas.
   projection as it stands and answers one built by other code as not yet
   built. A read thus never serves, nor a retry writes to, rows another
   version made.
+- **A fault sets one item aside, not the tick.** A deploy whose new code
+  records what older runners cannot read would otherwise stop those
+  runners' every loop, on every tick, until they are gone.
 - **Samples are taken from running processes** and checked by the model,
   without a store: holding a new `next` to old progress is a pure check.
 

@@ -11,7 +11,11 @@
 use factum_core::{Event, OnFailure, Projection, Query, RowOp, Table, Uuid, Value, Version, codes};
 use factum_store::{Batch, Checkpoint, DeadLetter, Store, StoreError};
 
-use crate::engine::{Engine, Error, MAX_RETRIES, rejected, yield_now};
+use crate::engine::{DISPATCH, Engine, Error, MAX_RETRIES, rejected, yield_now};
+
+/// What keeps a checkpoint: a projection, or dispatch (`None`), with the
+/// version and tables its checkpoint must carry to be current.
+type Keeper<'a> = (Option<&'a dyn Projection>, u32, Vec<Table>);
 
 /// The identity a checkpoint must carry to be the running code's.
 fn schema(tables: &[Table]) -> Result<String, Error> {
@@ -26,6 +30,15 @@ impl<S: Store> Engine<S> {
             .find(|p| p.name() == name)
             .map(|p| p.as_ref())
             .ok_or_else(|| rejected(codes::UNKNOWN, format!("no projection {name}")))
+    }
+
+    /// What keeps the checkpoint `name`.
+    fn keeper(&self, name: &str) -> Result<Keeper<'_>, Error> {
+        if name == DISPATCH {
+            return Ok((None, 1, Vec::new()));
+        }
+        let p = self.projection(name)?;
+        Ok((Some(p), p.version(), p.tables()))
     }
 
     /// The checkpoint of `name` if it was built as `version` with `tables`;
@@ -209,13 +222,11 @@ impl<S: Store> Engine<S> {
         Ok(self.store.row(projection, table, key).await?)
     }
 
+    /// The events `projection` failed on; for [`DISPATCH`], the events the
+    /// engine could not dispatch.
     pub async fn dead_letters(&self, projection: &str) -> Result<Vec<DeadLetter>, Error> {
-        let p = self.projection(projection)?;
-        if self
-            .current(projection, p.version(), &p.tables())
-            .await?
-            .is_none()
-        {
+        let (_, version, tables) = self.keeper(projection)?;
+        if self.current(projection, version, &tables).await?.is_none() {
             return Ok(Vec::new());
         }
         Ok(self.store.dead_letters(projection).await?)
@@ -226,11 +237,12 @@ impl<S: Store> Engine<S> {
     /// batch; a projection that stopped at it goes on past it. Answers
     /// whether it projected; if not, the dead letter stays. Refused
     /// `unknown` if the projection, as current, has no such dead letter.
+    /// For [`DISPATCH`], dispatches the event again: the processes it starts
+    /// and the waits it answers.
     pub async fn retry_dead_letter(&self, projection: &str, event: Uuid) -> Result<bool, Error> {
-        let p = self.projection(projection)?;
-        let tables = p.tables();
+        let (p, version, tables) = self.keeper(projection)?;
         for _ in 0..MAX_RETRIES {
-            let Some(at) = self.current(projection, p.version(), &tables).await? else {
+            let Some(at) = self.current(projection, version, &tables).await? else {
                 return Err(no_dead_letter(projection, event));
             };
             let Some(dead) = self
@@ -254,14 +266,22 @@ impl<S: Store> Engine<S> {
                     dead.stream, dead.version
                 )));
             };
-            let Ok(ops) = self.project_one(p, &tables, e) else {
-                return Ok(false);
+            let ops = match p {
+                Some(p) => match self.project_one(p, &tables, e) {
+                    Ok(ops) => ops,
+                    Err(_) => return Ok(false),
+                },
+                None => match self.dispatch_event(e, self.now(), &mut Vec::new()).await {
+                    Ok(_) => Vec::new(),
+                    Err(Error::Store(e)) => return Err(e.into()),
+                    Err(_) => return Ok(false),
+                },
             };
             // Held at this dead letter: it is projected now, so go on past it.
             let past = at.stopped && dead.position > at.position;
             let batch = Batch {
                 projection: projection.into(),
-                version: p.version(),
+                version,
                 from: at.position,
                 to: if past { dead.position } else { at.position },
                 ops,

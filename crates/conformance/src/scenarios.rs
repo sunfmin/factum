@@ -1053,6 +1053,119 @@ pub async fn a_work_row_that_does_not_decode_is_a_fault<B: Backend>(b: &B) {
     fault(e.settle().await);
 }
 
+// ---- faults in one item ----
+
+/// A model `build` declares, with the shop's task types.
+fn with_tasks(build: impl FnOnce(factum::Model) -> factum::Model) -> factum::Model {
+    crate::domain::task_types()
+        .into_iter()
+        .fold(build(factum::Model::new()), |m, t| m.task(t))
+}
+
+fn pending(view: factum::ProcessView) -> Option<String> {
+    view.pending.map(|(key, _)| key)
+}
+
+pub async fn an_event_that_cannot_be_dispatched_stops_nothing_else<B: Backend>(b: &B) {
+    let w = World::new(b);
+    // A rolling deploy: the new code records orders in a shape the old
+    // runner's upcast refuses.
+    let new = w.engine("new");
+    let old = w.engine_with(
+        with_tasks(|m| {
+            m.command::<crate::domain::old::OldPlace>()
+                .command::<crate::domain::AddCounter>()
+                .process::<crate::domain::FulfilProcess>()
+                .process::<crate::domain::LabelProcess>()
+        }),
+        "old",
+    );
+    let newer = place(&new, 1).await;
+    let o = id();
+    old.submit(sub("order.place", json!({ "order": o, "total": 2 })))
+        .await
+        .unwrap();
+    pay(&new, o).await;
+    let label = id();
+    old.start("label", label, json!({ "order": o }), ann())
+        .await
+        .unwrap();
+
+    let tick = old.tick().await.unwrap();
+    let bad = new.history(&order(newer)).await.unwrap()[0].id;
+    assert_eq!(
+        tick.faults
+            .iter()
+            .map(|f| f.item.clone())
+            .collect::<Vec<_>>(),
+        vec![format!("event {bad}")]
+    );
+    let history = new.history(&order(o)).await.unwrap();
+    let paid = history.iter().find(|e| e.kind == "OrderPaid").unwrap().id;
+    let fulfil = old.process(start_key(paid, "fulfil")).await.unwrap();
+    assert_eq!(pending(fulfil).as_deref(), Some("pack"), "a later event");
+    assert_eq!(
+        pending(old.process(label).await.unwrap()).as_deref(),
+        Some("pack"),
+        "a process advanced in the same tick"
+    );
+
+    let dead = old.dead_letters(factum::DISPATCH).await.unwrap();
+    assert_eq!(dead.iter().map(|d| d.event).collect::<Vec<_>>(), vec![bad]);
+    assert_eq!(old.tick().await.unwrap().faults, Vec::new(), "parked");
+    assert!(
+        !old.retry_dead_letter(factum::DISPATCH, bad).await.unwrap(),
+        "the old code fails again"
+    );
+    assert!(new.retry_dead_letter(factum::DISPATCH, bad).await.unwrap());
+    assert!(new.dead_letters(factum::DISPATCH).await.unwrap().is_empty());
+}
+
+pub async fn a_process_that_faults_stops_no_other<B: Backend>(b: &B) {
+    let w = World::new(b);
+    let buggy = w.engine_with(
+        with_tasks(|m| {
+            m.command::<crate::domain::unreadable::AddUnreadable>()
+                .process::<crate::domain::LabelProcess>()
+                .process::<crate::domain::PrintProcess>()
+        }),
+        "buggy",
+    );
+    let (label, print) = (id(), id());
+    buggy
+        .start("label", label, json!({ "order": id() }), ann())
+        .await
+        .unwrap();
+    w.advance(1);
+    buggy
+        .start("print", print, json!({ "order": id() }), ann())
+        .await
+        .unwrap();
+
+    let tick = buggy.tick().await.unwrap();
+    assert_eq!(
+        tick.faults
+            .iter()
+            .map(|f| f.item.clone())
+            .collect::<Vec<_>>(),
+        vec![format!("process/{label}")]
+    );
+    assert_eq!(
+        pending(buggy.process(print).await.unwrap()).as_deref(),
+        Some("print")
+    );
+    assert_eq!(pending(buggy.process(label).await.unwrap()), None);
+
+    let fixed = w.engine("fixed");
+    w.advance(Options::default().advance_lease_ms);
+    fixed.settle().await.unwrap();
+    assert_eq!(
+        pending(fixed.process(label).await.unwrap()).as_deref(),
+        Some("pack"),
+        "tried again once its lease ran out"
+    );
+}
+
 // ---- projections ----
 
 pub async fn projection_rows_follow_the_log_and_rebuild_the_same<B: Backend>(b: &B) {

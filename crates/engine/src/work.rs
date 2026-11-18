@@ -9,7 +9,7 @@ use factum_core::{
 use factum_store::{Claim, Store, StoreError, Unit};
 use serde_json::json;
 
-use crate::engine::{Engine, Error, Submission, Write, rejected};
+use crate::engine::{Engine, Error, Fault, Submission, Write, rejected, set_aside};
 use crate::model::ActionAnswer;
 
 /// A task a worker holds.
@@ -50,14 +50,22 @@ impl<S: Store> Engine<S> {
 
     // ---- processes ----
 
-    pub(crate) async fn advance_due(&self, now: Instant) -> Result<usize, Error> {
+    pub(crate) async fn advance_due(
+        &self,
+        now: Instant,
+        faults: &mut Vec<Fault>,
+    ) -> Result<usize, Error> {
         let rows = self
             .store
             .claim(self.claim(WorkKind::Advance, None, now, self.options.advance_lease_ms))
             .await?;
-        let count = rows.len();
+        let mut count = 0;
         for row in rows {
-            self.advance_one(row, now).await?;
+            let id = row.id;
+            let advanced = self.advance_one(row, now).await;
+            if set_aside(advanced, || format!("{PROCESS}/{id}"), faults)?.is_some() {
+                count += 1;
+            }
         }
         Ok(count)
     }
@@ -270,14 +278,22 @@ impl<S: Store> Engine<S> {
     }
 
     /// Answers the waits for the event that just arrived.
-    pub(crate) async fn arrived(&self, e: &Event, now: Instant) -> Result<usize, Error> {
+    pub(crate) async fn arrived(
+        &self,
+        e: &Event,
+        now: Instant,
+        faults: &mut Vec<Fault>,
+    ) -> Result<usize, Error> {
         let mut done = 0;
         for row in self
             .store
             .work_named(WorkKind::Await, &e.stream.to_string())
             .await?
         {
-            let wait = row.wait().map_err(Error::Fault)?;
+            let item = || format!("wait {}", row.id);
+            let Some(wait) = set_aside(row.wait().map_err(Error::Fault), item, faults)? else {
+                continue;
+            };
             if wait.event == e.kind {
                 let by = By::Process(StreamId::new(PROCESS, wait.process));
                 if self
@@ -299,27 +315,43 @@ impl<S: Store> Engine<S> {
         Ok(done)
     }
 
-    pub(crate) async fn expire_waits(&self, now: Instant) -> Result<usize, Error> {
+    pub(crate) async fn expire_waits(
+        &self,
+        now: Instant,
+        faults: &mut Vec<Fault>,
+    ) -> Result<usize, Error> {
         let rows = self
             .store
             .claim(self.claim(WorkKind::Await, None, now, self.options.schedule_lease_ms))
             .await?;
-        let count = rows.len();
+        let mut count = 0;
         for row in rows {
-            let wait = row.wait().map_err(Error::Fault)?;
-            let outcome = match self.first_event(&wait.stream, &wait.event).await? {
-                Some(found) => Outcome::Ok(found),
-                None => Outcome::TimedOut,
-            };
-            let by = By::Process(StreamId::new(PROCESS, wait.process));
-            self.answer_row(&row, outcome, &by, now, &[]).await?;
+            let ended = self.expire_wait(&row, now).await;
+            if set_aside(ended, || format!("wait {}", row.id), faults)?.is_some() {
+                count += 1;
+            }
         }
         Ok(count)
     }
 
+    async fn expire_wait(&self, row: &Work, now: Instant) -> Result<(), Error> {
+        let wait = row.wait().map_err(Error::Fault)?;
+        let outcome = match self.first_event(&wait.stream, &wait.event).await? {
+            Some(found) => Outcome::Ok(found),
+            None => Outcome::TimedOut,
+        };
+        let by = By::Process(StreamId::new(PROCESS, wait.process));
+        self.answer_row(row, outcome, &by, now, &[]).await?;
+        Ok(())
+    }
+
     // ---- actions ----
 
-    pub(crate) async fn deliver(&self, now: Instant) -> Result<usize, Error> {
+    pub(crate) async fn deliver(
+        &self,
+        now: Instant,
+        faults: &mut Vec<Fault>,
+    ) -> Result<usize, Error> {
         let mut count = 0;
         for (name, def) in &self.model.actions {
             let claim = self.claim(
@@ -329,31 +361,44 @@ impl<S: Store> Engine<S> {
                 def.policy.timeout_ms,
             );
             for row in self.store.claim(claim).await? {
-                count += 1;
-                let by = By::Action(name.clone());
-                let call = row.call().map_err(Error::Fault)?;
-                if row.taken_over && call.at_most_once {
-                    self.answer_row(&row, Outcome::Unknown, &by, now, &[])
-                        .await?;
-                    continue;
+                let delivered = self.deliver_one(name, def, &row, now).await;
+                let item = || format!("action {name} {}", row.id);
+                if set_aside(delivered, item, faults)?.is_some() {
+                    count += 1;
                 }
-                let outcome = match (def.call)(row.id, call.params).await {
-                    ActionAnswer::Done(v) => Outcome::Ok(v),
-                    ActionAnswer::Rejected(r) => Outcome::Rejected(r),
-                    ActionAnswer::Permanent(e) => Outcome::Failed(e),
-                    ActionAnswer::Passing(e) if row.attempts >= def.policy.retry.attempts => {
-                        Outcome::Failed(e)
-                    }
-                    ActionAnswer::Passing(_) => {
-                        let due = now.plus(def.policy.retry.delay(row.attempts, row.id));
-                        self.release(&row, due).await?;
-                        continue;
-                    }
-                };
-                self.answer_row(&row, outcome, &by, now, &[]).await?;
             }
         }
         Ok(count)
+    }
+
+    async fn deliver_one(
+        &self,
+        name: &str,
+        def: &crate::model::ActionDef,
+        row: &Work,
+        now: Instant,
+    ) -> Result<(), Error> {
+        let by = By::Action(name.to_string());
+        let call = row.call().map_err(Error::Fault)?;
+        if row.taken_over && call.at_most_once {
+            self.answer_row(row, Outcome::Unknown, &by, now, &[])
+                .await?;
+            return Ok(());
+        }
+        let outcome = match (def.call)(row.id, call.params).await {
+            ActionAnswer::Done(v) => Outcome::Ok(v),
+            ActionAnswer::Rejected(r) => Outcome::Rejected(r),
+            ActionAnswer::Permanent(e) => Outcome::Failed(e),
+            ActionAnswer::Passing(e) if row.attempts >= def.policy.retry.attempts => {
+                Outcome::Failed(e)
+            }
+            ActionAnswer::Passing(_) => {
+                let due = now.plus(def.policy.retry.delay(row.attempts, row.id));
+                return self.release(row, due).await;
+            }
+        };
+        self.answer_row(row, outcome, &by, now, &[]).await?;
+        Ok(())
     }
 
     async fn release(&self, row: &Work, due: Instant) -> Result<(), Error> {
@@ -377,7 +422,11 @@ impl<S: Store> Engine<S> {
 
     // ---- schedules and recurring commands ----
 
-    pub(crate) async fn run_due(&self, now: Instant) -> Result<usize, Error> {
+    pub(crate) async fn run_due(
+        &self,
+        now: Instant,
+        faults: &mut Vec<Fault>,
+    ) -> Result<usize, Error> {
         let rows = self
             .store
             .claim(self.claim(
@@ -387,39 +436,11 @@ impl<S: Store> Engine<S> {
                 self.options.schedule_lease_ms,
             ))
             .await?;
-        let mut count = rows.len();
+        let mut count = 0;
         for row in rows {
-            let sub = Submission {
-                command: row.name.clone(),
-                params: row.input().map_err(Error::Fault)?.clone(),
-                key: schedule_key(row.id),
-                by: By::Schedule(row.id),
-            };
-            let outcome = match self.submit_at(sub, now).await {
-                Ok(_) => json!({ "ok": true }),
-                Err(Error::Rejected(r)) => json!({ "ok": false, "rejection": r }),
-                Err(e) => return Err(e),
-            };
-            let ran = Write {
-                stream: schedule_stream(row.id),
-                expected: Version(0),
-                events: vec![NewEvent {
-                    kind: SCHEDULE_RAN.to_string(),
-                    data: outcome,
-                }],
-                meta: Meta {
-                    now,
-                    by: By::Schedule(row.id),
-                    key: Some(schedule_key(row.id)),
-                    command: row.name.clone(),
-                },
-                fingerprint: None,
-                work: Vec::new(),
-                guards: Vec::new(),
-            };
-            match self.write(ran).await {
-                Ok(_) | Err(StoreError::Conflict(_)) => {}
-                Err(e) => return Err(e.into()),
+            let ran = self.run_scheduled(&row, now).await;
+            if set_aside(ran, || format!("schedule {}", row.id), faults)?.is_some() {
+                count += 1;
             }
         }
         for r in &self.model.recurring {
@@ -428,19 +449,58 @@ impl<S: Store> Engine<S> {
             if self.store.answer(key).await?.is_some() {
                 continue;
             }
-            count += 1;
             let sub = Submission {
                 command: r.command.clone(),
                 params: r.params.clone(),
                 key,
                 by: By::Recurring(r.name.clone()),
             };
-            match self.submit_at(sub, now).await {
-                Ok(_) | Err(Error::Rejected(_)) => {}
-                Err(e) => return Err(e),
+            let ran = match self.submit_at(sub, now).await {
+                Ok(_) | Err(Error::Rejected(_)) => Ok(()),
+                Err(e) => Err(e),
+            };
+            if set_aside(ran, || format!("recurring {}", r.name), faults)?.is_some() {
+                count += 1;
             }
         }
         Ok(count)
+    }
+
+    /// Runs a due scheduled command and records its outcome, a refusal
+    /// included.
+    async fn run_scheduled(&self, row: &Work, now: Instant) -> Result<(), Error> {
+        let sub = Submission {
+            command: row.name.clone(),
+            params: row.input().map_err(Error::Fault)?.clone(),
+            key: schedule_key(row.id),
+            by: By::Schedule(row.id),
+        };
+        let outcome = match self.submit_at(sub, now).await {
+            Ok(_) => json!({ "ok": true }),
+            Err(Error::Rejected(r)) => json!({ "ok": false, "rejection": r }),
+            Err(e) => return Err(e),
+        };
+        let ran = Write {
+            stream: schedule_stream(row.id),
+            expected: Version(0),
+            events: vec![NewEvent {
+                kind: SCHEDULE_RAN.to_string(),
+                data: outcome,
+            }],
+            meta: Meta {
+                now,
+                by: By::Schedule(row.id),
+                key: Some(schedule_key(row.id)),
+                command: row.name.clone(),
+            },
+            fingerprint: None,
+            work: Vec::new(),
+            guards: Vec::new(),
+        };
+        match self.write(ran).await {
+            Ok(_) | Err(StoreError::Conflict(_)) => Ok(()),
+            Err(e) => Err(e.into()),
+        }
     }
 
     // ---- tasks ----
