@@ -5,7 +5,9 @@ use factum_core::{
     ProcessState, Progress, Rejection, SCHEDULED, Step, StreamId, Uuid, Value, Version, WorkChange,
     WorkKind, codes, effects, fingerprint, start_key,
 };
-use factum_store::{Answer, AnswerResult, Append, Batch, Snapshot, Store, StoreError, Unit};
+use factum_store::{
+    Answer, AnswerResult, Append, Batch, DeadLetter, Snapshot, Store, StoreError, Unit,
+};
 use serde::Serialize;
 use serde_json::json;
 
@@ -36,6 +38,46 @@ impl std::error::Error for Error {}
 impl From<StoreError> for Error {
     fn from(e: StoreError) -> Error {
         Error::Store(e)
+    }
+}
+
+/// One item a tick set aside: an event it could not dispatch, a process it
+/// could not advance, a call, schedule, recurring command or wait it could
+/// not run. The rest of the tick went on.
+#[derive(Clone, Debug, PartialEq)]
+pub struct Fault {
+    /// What faulted: `event <id>`, `process/<id>`, `action <name> <id>`,
+    /// `schedule <id>`, `recurring <name>` or `wait <id>`.
+    pub item: String,
+    pub error: String,
+}
+
+/// What one pass of the loops did.
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct Tick {
+    /// How many things it did.
+    pub done: usize,
+    /// The items it set aside.
+    pub faults: Vec<Fault>,
+}
+
+/// An item's result, its fault set aside: a fault is the item's and is
+/// reported in `faults`; a store error is no item's and ends the tick.
+pub(crate) fn set_aside<T>(
+    result: Result<T, Error>,
+    item: impl FnOnce() -> String,
+    faults: &mut Vec<Fault>,
+) -> Result<Option<T>, Error> {
+    match result {
+        Ok(v) => Ok(Some(v)),
+        Err(Error::Store(e)) => Err(Error::Store(e)),
+        Err(e) => {
+            faults.push(Fault {
+                item: item(),
+                error: e.to_string(),
+            });
+            Ok(None)
+        }
     }
 }
 
@@ -105,8 +147,9 @@ impl Default for Options {
 }
 
 /// Where the engine keeps how far it has dispatched the log: a checkpoint
-/// with no tables, under a name no projection can have.
-const DISPATCH: &str = "factum.dispatch";
+/// with no tables, under a name no projection can have. The events it could
+/// not dispatch are its dead letters.
+pub const DISPATCH: &str = "factum.dispatch";
 /// How often one writer decides again after losing a race. Every loss is
 /// another writer's win, so the log always moves; the bound only keeps one
 /// writer from losing forever.
@@ -567,24 +610,40 @@ impl<S: Store> Engine<S> {
     /// One pass of every loop: dispatch new events (process starts and
     /// awaited events), advance processes, deliver actions, run due
     /// schedules and recurring commands, end expired waits, and catch the
-    /// projections up. Answers how many things it did.
-    pub async fn tick(&self) -> Result<usize, Error> {
+    /// projections up. A fault in one item sets that item aside and the
+    /// rest goes on: an event that cannot be dispatched becomes a dead
+    /// letter of [`DISPATCH`]; any other item keeps its row, tried again
+    /// once its lease runs out. Answers how many things it did and the
+    /// faults it set aside; only a store error ends it.
+    pub async fn tick(&self) -> Result<Tick, Error> {
         let now = self.clock.now();
-        let mut done = self.dispatch(now).await?;
-        done += self.advance_due(now).await?;
-        done += self.deliver(now).await?;
-        done += self.run_due(now).await?;
-        done += self.expire_waits(now).await?;
+        let mut faults = Vec::new();
+        let mut done = self.dispatch(now, &mut faults).await?;
+        done += self.advance_due(now, &mut faults).await?;
+        done += self.deliver(now, &mut faults).await?;
+        done += self.run_due(now, &mut faults).await?;
+        done += self.expire_waits(now, &mut faults).await?;
         done += self.project().await?;
-        Ok(done)
+        Ok(Tick { done, faults })
     }
 
     /// Ticks until a tick does nothing (at most `SETTLE_TICKS` times),
-    /// without moving the clock.
+    /// without moving the clock. A fault: every tick ran, but some item was
+    /// set aside.
     pub async fn settle(&self) -> Result<(), Error> {
+        let mut faults: Vec<Fault> = Vec::new();
         for _ in 0..SETTLE_TICKS {
-            if self.tick().await? == 0 {
-                return Ok(());
+            let tick = self.tick().await?;
+            faults.extend(tick.faults);
+            if tick.done == 0 {
+                if faults.is_empty() {
+                    return Ok(());
+                }
+                let list: Vec<String> = faults
+                    .iter()
+                    .map(|f| format!("{}: {}", f.item, f.error))
+                    .collect();
+                return Err(Error::Fault(list.join("; ")));
             }
         }
         Err(Error::Fault(format!(
@@ -592,7 +651,7 @@ impl<S: Store> Engine<S> {
         )))
     }
 
-    async fn dispatch(&self, now: Instant) -> Result<usize, Error> {
+    async fn dispatch(&self, now: Instant, faults: &mut Vec<Fault>) -> Result<usize, Error> {
         let mut at = self.make_current(DISPATCH, 1, &[]).await?;
         let mut done = 0;
         loop {
@@ -600,8 +659,29 @@ impl<S: Store> Engine<S> {
             let Some(last) = events.last().map(|e| e.position) else {
                 return Ok(done);
             };
+            let mut dead = Vec::new();
             for e in events {
-                done += self.dispatch_event(e, now).await?;
+                let (position, event, stream, version) =
+                    (e.position, e.id, e.stream.clone(), e.version);
+                match self.dispatch_event(e, now, faults).await {
+                    Ok(n) => done += n,
+                    Err(Error::Store(err)) => return Err(err.into()),
+                    Err(err) => {
+                        let error = err.to_string();
+                        faults.push(Fault {
+                            item: format!("event {event}"),
+                            error: error.clone(),
+                        });
+                        dead.push(DeadLetter {
+                            projection: DISPATCH.into(),
+                            position,
+                            event,
+                            stream,
+                            version,
+                            error,
+                        });
+                    }
+                }
             }
             let batch = Batch {
                 projection: DISPATCH.into(),
@@ -609,7 +689,7 @@ impl<S: Store> Engine<S> {
                 from: at.position,
                 to: last,
                 ops: Vec::new(),
-                dead: Vec::new(),
+                dead,
                 resolved: Vec::new(),
                 stop: false,
             };
@@ -621,7 +701,14 @@ impl<S: Store> Engine<S> {
         }
     }
 
-    async fn dispatch_event(&self, e: Event, now: Instant) -> Result<usize, Error> {
+    /// Starts the processes `e` starts and answers the waits for it. A wait
+    /// row that faults is set aside; the event goes on to the rest.
+    pub(crate) async fn dispatch_event(
+        &self,
+        e: Event,
+        now: Instant,
+        faults: &mut Vec<Fault>,
+    ) -> Result<usize, Error> {
         let mut done = 0;
         let e = self.upcast(e)?;
         for (name, process) in &self.model.processes {
@@ -640,7 +727,7 @@ impl<S: Store> Engine<S> {
                 }
             }
         }
-        done += self.arrived(&e, now).await?;
+        done += self.arrived(&e, now, faults).await?;
         Ok(done)
     }
 }
