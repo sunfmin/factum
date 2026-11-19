@@ -179,6 +179,8 @@ macro_rules! suite {
             a_work_row_that_does_not_decode_is_a_fault,
             an_event_that_cannot_be_dispatched_stops_nothing_else,
             a_process_that_faults_stops_no_other,
+            a_store_error_ends_the_tick_and_a_fault_does_not,
+            a_store_error_reaches_a_worker_as_it_is,
             projection_rows_follow_the_log_and_rebuild_the_same,
             a_projection_skips_an_event_it_fails_on,
             two_projectors_apply_each_event_once,
