@@ -150,16 +150,43 @@ impl Default for Options {
 /// with no tables, under a name no projection can have. The events it could
 /// not dispatch are its dead letters.
 pub const DISPATCH: &str = "factum.dispatch";
-/// How often one writer decides again after losing a race. Every loss is
-/// another writer's win, so the log always moves; the bound only keeps one
-/// writer from losing forever.
-pub(crate) const MAX_RETRIES: usize = 1000;
 /// How many ticks `settle` takes before it calls the engine stuck busy.
 const SETTLE_TICKS: usize = 1000;
 
-/// Lets the other tasks run once: a writer that lost a race lets the
-/// winners finish before it decides again. Needs no particular runtime.
-pub(crate) async fn yield_now() {
+/// How often one writer decides again after losing a race. Every loss is
+/// another writer's win, so the log always moves; the bound only keeps one
+/// writer from losing forever.
+const MAX_RETRIES: usize = 1000;
+
+/// The one home of deciding again after a lost race (SPEC §7). A writer
+/// counts its losses here; each one yields once, so the winners finish
+/// before it decides again, until the bound, where it gives up. What counts
+/// as a lost race is the writer's own.
+pub(crate) struct Races {
+    lost: usize,
+}
+
+impl Races {
+    pub(crate) fn new() -> Races {
+        Races { lost: 0 }
+    }
+
+    /// `what` lost a race: lets the other tasks run once, or gives up with
+    /// a fault naming it after `MAX_RETRIES` losses.
+    pub(crate) async fn lost(&mut self, what: impl std::fmt::Display) -> Result<(), Error> {
+        self.lost += 1;
+        if self.lost >= MAX_RETRIES {
+            return Err(Error::Fault(format!(
+                "{what}: gave up after losing {MAX_RETRIES} races"
+            )));
+        }
+        yield_now().await;
+        Ok(())
+    }
+}
+
+/// Lets the other tasks run once. Needs no particular runtime.
+async fn yield_now() {
     let mut yielded = false;
     std::future::poll_fn(|cx| {
         if yielded {
@@ -220,7 +247,8 @@ impl<S: Store> Engine<S> {
 
     pub(crate) async fn submit_at(&self, sub: Submission, now: Instant) -> Result<Applied, Error> {
         let print = fingerprint(&sub.command, &sub.params);
-        for _ in 0..MAX_RETRIES {
+        let mut races = Races::new();
+        loop {
             if let Some(answer) = self.store.answer(sub.key).await? {
                 return replay(answer, print);
             }
@@ -240,7 +268,10 @@ impl<S: Store> Engine<S> {
                     match self.store.commit(unit).await {
                         Ok(_) => return Err(Error::Rejected(r)),
                         // Another writer answered the key first: answer what it holds.
-                        Err(StoreError::KeyTaken(_)) => continue,
+                        Err(StoreError::KeyTaken(_)) => {
+                            races.lost(&sub.command).await?;
+                            continue;
+                        }
                         Err(e) => return Err(e.into()),
                     }
                 }
@@ -269,14 +300,12 @@ impl<S: Store> Engine<S> {
                         replayed: false,
                     });
                 }
-                Err(StoreError::Conflict(_) | StoreError::KeyTaken(_)) => yield_now().await,
+                Err(StoreError::Conflict(_) | StoreError::KeyTaken(_)) => {
+                    races.lost(&sub.command).await?
+                }
                 Err(e) => return Err(e.into()),
             }
         }
-        Err(Error::Fault(format!(
-            "{}: gave up after {MAX_RETRIES} conflicts",
-            sub.command
-        )))
     }
 
     /// What the command would record, recording nothing.
@@ -499,7 +528,8 @@ impl<S: Store> Engine<S> {
             return Err(rejected(codes::UNKNOWN, format!("no process {name}")));
         }
         let stream = StreamId::new(PROCESS, id);
-        for _ in 0..MAX_RETRIES {
+        let mut races = Races::new();
+        loop {
             let state = self.process_state(id).await?;
             if !state.name.is_empty() {
                 if state.name != name || state.input != input {
@@ -530,11 +560,10 @@ impl<S: Store> Engine<S> {
                 .await
             {
                 Ok(()) => return Ok(stream),
-                Err(StoreError::Conflict(_)) => yield_now().await,
+                Err(StoreError::Conflict(_)) => races.lost(format!("starting {stream}")).await?,
                 Err(e) => return Err(e.into()),
             }
         }
-        Err(Error::Fault(format!("{stream}: gave up starting")))
     }
 
     pub async fn process(&self, id: Uuid) -> Result<ProcessView, Error> {

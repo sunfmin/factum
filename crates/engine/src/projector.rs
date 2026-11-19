@@ -11,7 +11,7 @@
 use factum_core::{Event, OnFailure, Projection, Query, RowOp, Table, Uuid, Value, Version, codes};
 use factum_store::{Batch, Checkpoint, DeadLetter, Store, StoreError};
 
-use crate::engine::{DISPATCH, Engine, Error, MAX_RETRIES, rejected, yield_now};
+use crate::engine::{DISPATCH, Engine, Error, Races, rejected};
 
 /// What keeps a checkpoint: a projection, or dispatch (`None`), with the
 /// version and tables its checkpoint must carry to be current.
@@ -241,7 +241,8 @@ impl<S: Store> Engine<S> {
     /// and the waits it answers.
     pub async fn retry_dead_letter(&self, projection: &str, event: Uuid) -> Result<bool, Error> {
         let (p, version, tables) = self.keeper(projection)?;
-        for _ in 0..MAX_RETRIES {
+        let mut races = Races::new();
+        loop {
             let Some(at) = self.current(projection, version, &tables).await? else {
                 return Err(no_dead_letter(projection, event));
             };
@@ -291,13 +292,14 @@ impl<S: Store> Engine<S> {
             };
             match self.store.apply_projection(batch).await {
                 Ok(()) => return Ok(true),
-                Err(StoreError::Stale(_)) => yield_now().await,
+                Err(StoreError::Stale(_)) => {
+                    races
+                        .lost(format!("{projection}: retrying {event}"))
+                        .await?
+                }
                 Err(e) => return Err(e.into()),
             }
         }
-        Err(Error::Fault(format!(
-            "{projection}: gave up retrying {event} after {MAX_RETRIES} races"
-        )))
     }
 }
 
