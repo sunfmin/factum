@@ -11,7 +11,8 @@
 use factum_core::{Event, OnFailure, Projection, Query, RowOp, Table, Uuid, Value, Version, codes};
 use factum_store::{Batch, Checkpoint, DeadLetter, Store, StoreError};
 
-use crate::engine::{DISPATCH, Engine, Error, Races, rejected};
+use crate::engine::{DISPATCH, Engine, Error, Fault, Races, rejected};
+use factum_core::Instant;
 
 /// What keeps a checkpoint and follows the log from it: dispatch, or a
 /// projection.
@@ -22,6 +23,21 @@ pub(crate) enum Keeper<'a> {
 }
 
 impl Keeper<'_> {
+    fn name(&self) -> &str {
+        match self {
+            Keeper::Dispatch => DISPATCH,
+            Keeper::Projection(p) => p.name(),
+        }
+    }
+
+    /// Whether an event it fails on holds its checkpoint there.
+    fn on_failure(&self) -> OnFailure {
+        match self {
+            Keeper::Dispatch => OnFailure::Skip,
+            Keeper::Projection(p) => p.on_failure(),
+        }
+    }
+
     /// The version its checkpoint must carry to be current.
     fn version(&self) -> u32 {
         match self {
@@ -37,6 +53,13 @@ impl Keeper<'_> {
             Keeper::Projection(p) => p.tables(),
         }
     }
+}
+
+/// What one event did as a keeper followed it: the row ops it makes, or
+/// why it failed; and how many things that was.
+struct Step {
+    ops: Result<Vec<RowOp>, String>,
+    done: usize,
 }
 
 /// The identity a checkpoint must carry to be the running code's.
@@ -138,62 +161,131 @@ impl<S: Store> Engine<S> {
         Ok(ops)
     }
 
-    /// Catches every projection up with the log, rebuilding those that are
-    /// not current. Answers how many events it projected.
-    pub(crate) async fn project(&self) -> Result<usize, Error> {
-        let mut done = 0;
-        for p in &self.model.projections {
-            let tables = p.tables();
-            let mut at = self.make_current(p.name(), p.version(), &tables).await?;
-            while !at.stopped {
-                let events = self.store.read_log(at.position, self.options.batch).await?;
-                if events.is_empty() {
-                    break;
+    /// What `k` does with `e`: a projection's row ops; for dispatch, the
+    /// processes it starts and the waits it answers, its fault set aside.
+    /// Only a store error ends it.
+    async fn step(
+        &self,
+        k: Keeper<'_>,
+        tables: &[Table],
+        e: Event,
+        now: Instant,
+        faults: &mut Vec<Fault>,
+    ) -> Result<Step, Error> {
+        let Keeper::Projection(p) = k else {
+            let event = e.id;
+            return match self.dispatch_event(e, now, faults).await {
+                Ok(done) => Ok(Step {
+                    ops: Ok(Vec::new()),
+                    done,
+                }),
+                Err(Error::Store(e)) => Err(e.into()),
+                Err(err) => {
+                    let error = err.to_string();
+                    faults.push(Fault {
+                        item: format!("event {event}"),
+                        error: error.clone(),
+                    });
+                    Ok(Step {
+                        ops: Err(error),
+                        done: 0,
+                    })
                 }
-                let (mut ops, mut dead, mut to, mut stop) =
-                    (Vec::new(), Vec::new(), at.position, false);
-                for e in events {
-                    let (position, id, stream, version) =
-                        (e.position, e.id, e.stream.clone(), e.version);
-                    match self.project_one(p.as_ref(), &tables, e) {
-                        Ok(o) => ops.extend(o),
-                        Err(error) => {
-                            dead.push(DeadLetter {
-                                projection: p.name().into(),
-                                position,
-                                event: id,
-                                stream,
-                                version,
-                                error,
-                            });
-                            if p.on_failure() == OnFailure::Stop {
-                                stop = true;
-                                break;
-                            }
+            };
+        };
+        Ok(Step {
+            ops: self.project_one(p, tables, e),
+            done: 1,
+        })
+    }
+
+    /// Moves `k`'s checkpoint from `at` to `to` in one batch, with the rows,
+    /// dead letters and retried dead letters of that move. Answers false if
+    /// `at` is no longer where it stands.
+    async fn advance(
+        &self,
+        k: Keeper<'_>,
+        at: &Checkpoint,
+        to: &Checkpoint,
+        ops: Vec<RowOp>,
+        dead: Vec<DeadLetter>,
+        resolved: Vec<Uuid>,
+    ) -> Result<bool, Error> {
+        let batch = Batch {
+            projection: k.name().into(),
+            version: k.version(),
+            from: at.position,
+            to: to.position,
+            ops,
+            dead,
+            resolved,
+            stop: to.stopped,
+        };
+        match self.store.apply_projection(batch).await {
+            Ok(()) => Ok(true),
+            Err(StoreError::Stale(_)) => Ok(false),
+            Err(e) => Err(e.into()),
+        }
+    }
+
+    /// Catches `k`'s checkpoint up with the log, rebuilding it if it is not
+    /// current: each event a step, a failing one a dead letter. Gives up if
+    /// another catch-up moved it first. Answers how many things it did.
+    pub(crate) async fn follow(
+        &self,
+        k: Keeper<'_>,
+        now: Instant,
+        faults: &mut Vec<Fault>,
+    ) -> Result<usize, Error> {
+        let tables = k.tables();
+        let mut at = self.make_current(k.name(), k.version(), &tables).await?;
+        let mut done = 0;
+        while !at.stopped {
+            let events = self.store.read_log(at.position, self.options.batch).await?;
+            if events.is_empty() {
+                break;
+            }
+            let (mut ops, mut dead, mut to) = (Vec::new(), Vec::new(), at.clone());
+            for e in events {
+                let (position, event, stream, version) =
+                    (e.position, e.id, e.stream.clone(), e.version);
+                let step = self.step(k, &tables, e, now, faults).await?;
+                match step.ops {
+                    Ok(o) => ops.extend(o),
+                    Err(error) => {
+                        dead.push(DeadLetter {
+                            projection: k.name().into(),
+                            position,
+                            event,
+                            stream,
+                            version,
+                            error,
+                        });
+                        if k.on_failure() == OnFailure::Stop {
+                            to.stopped = true;
+                            break;
                         }
                     }
-                    to = position;
-                    done += 1;
                 }
-                let batch = Batch {
-                    projection: p.name().into(),
-                    version: p.version(),
-                    from: at.position,
-                    to,
-                    ops,
-                    dead,
-                    resolved: Vec::new(),
-                    stop,
-                };
-                match self.store.apply_projection(batch).await {
-                    Ok(()) => {
-                        at.position = to;
-                        at.stopped = stop;
-                    }
-                    Err(StoreError::Stale(_)) => break,
-                    Err(e) => return Err(e.into()),
-                }
+                to.position = position;
+                done += step.done;
             }
+            if !self.advance(k, &at, &to, ops, dead, Vec::new()).await? {
+                break;
+            }
+            at = to;
+        }
+        Ok(done)
+    }
+
+    /// Catches every projection up with the log. Answers how many events it
+    /// projected.
+    pub(crate) async fn project(&self, now: Instant) -> Result<usize, Error> {
+        let mut done = 0;
+        for p in &self.model.projections {
+            done += self
+                .follow(Keeper::Projection(p.as_ref()), now, &mut Vec::new())
+                .await?;
         }
         Ok(done)
     }
@@ -266,10 +358,10 @@ impl<S: Store> Engine<S> {
     /// and the waits it answers.
     pub async fn retry_dead_letter(&self, projection: &str, event: Uuid) -> Result<bool, Error> {
         let k = self.keeper(projection)?;
-        let (version, tables) = (k.version(), k.tables());
+        let tables = k.tables();
         let mut races = Races::new();
         loop {
-            let Some(at) = self.current(projection, version, &tables).await? else {
+            let Some(at) = self.current(projection, k.version(), &tables).await? else {
                 return Err(no_dead_letter(projection, event));
             };
             let Some(dead) = self
@@ -293,39 +385,28 @@ impl<S: Store> Engine<S> {
                     dead.stream, dead.version
                 )));
             };
-            let ops = match k {
-                Keeper::Projection(p) => match self.project_one(p, &tables, e) {
-                    Ok(ops) => ops,
-                    Err(_) => return Ok(false),
-                },
-                Keeper::Dispatch => match self.dispatch_event(e, self.now(), &mut Vec::new()).await
-                {
-                    Ok(_) => Vec::new(),
-                    Err(Error::Store(e)) => return Err(e.into()),
-                    Err(_) => return Ok(false),
-                },
+            let step = self
+                .step(k, &tables, e, self.now(), &mut Vec::new())
+                .await?;
+            let Ok(ops) = step.ops else {
+                return Ok(false);
             };
-            // Held at this dead letter: it is projected now, so go on past it.
-            let past = at.stopped && dead.position > at.position;
-            let batch = Batch {
-                projection: projection.into(),
-                version,
-                from: at.position,
-                to: if past { dead.position } else { at.position },
-                ops,
-                dead: Vec::new(),
-                resolved: vec![event],
-                stop: at.stopped && !past,
-            };
-            match self.store.apply_projection(batch).await {
-                Ok(()) => return Ok(true),
-                Err(StoreError::Stale(_)) => {
-                    races
-                        .lost(format!("{projection}: retrying {event}"))
-                        .await?
-                }
-                Err(e) => return Err(e.into()),
+            // Past the checkpoint only if it is held at this dead letter: it
+            // is projected now, so go on past it.
+            let past = dead.position > at.position;
+            let mut to = at.clone();
+            if past {
+                (to.position, to.stopped) = (dead.position, false);
             }
+            if self
+                .advance(k, &at, &to, ops, Vec::new(), vec![event])
+                .await?
+            {
+                return Ok(true);
+            }
+            races
+                .lost(format!("{projection}: retrying {event}"))
+                .await?;
         }
     }
 }
