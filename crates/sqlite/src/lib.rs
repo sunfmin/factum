@@ -24,7 +24,8 @@ use factum_core::{
 };
 use factum_store::{
     Answer, Batch, Checkpoint, Claim, DeadLetter, Result, Snapshot, Store, StoreError, Unit,
-    apply_op, claim_row, committed_answer, op_target, release_row, wake_row,
+    apply_op, check_batch, check_unit, claim_row, committed_answer, op_target, release_row,
+    wake_row,
 };
 use rusqlite::types::Value as Sql;
 use rusqlite::{
@@ -438,12 +439,6 @@ fn read_row(conn: &Connection, projection: &str, table: &str, key: &str) -> Resu
 fn apply_ops(tx: &Transaction, projection: &str, ops: &[RowOp]) -> Result<()> {
     for op in ops {
         let (table, key) = op_target(op);
-        if !has_table(tx, projection, table)? {
-            return Err(StoreError::Undeclared {
-                projection: projection.to_string(),
-                table: table.to_string(),
-            });
-        }
         let name = table_name(projection, table);
         match apply_op(read_row(tx, projection, table, key)?, op) {
             Some(row) => tx.execute(
@@ -515,28 +510,21 @@ impl Store for SqliteStore {
 
     async fn commit(&self, unit: Unit) -> Result<Vec<Event>> {
         self.write(move |tx| {
-            for a in &unit.appends {
-                let at: i64 = tx
-                    .query_row("SELECT COALESCE(MAX(version), 0) FROM events WHERE stream = ?1", [a.stream.to_string()], |r| r.get(0))
-                    .map_err(backend)?;
-                if at as u64 != a.expected.0 {
-                    return Err(StoreError::Conflict(a.stream.clone()));
-                }
-            }
-            if let Some((key, _)) = &unit.answer {
-                let taken: Option<i64> = tx
-                    .query_row("SELECT 1 FROM answers WHERE key = ?1", [key.to_string()], |r| r.get(0))
-                    .optional()
-                    .map_err(backend)?;
-                if taken.is_some() {
-                    return Err(StoreError::KeyTaken(*key));
-                }
-            }
-            for (kind, id, lease) in unit.leases() {
-                if lease_of(tx, kind, id)? != Some(lease.to_string()) {
-                    return Err(StoreError::LeaseLost);
-                }
-            }
+            check_unit(
+                &unit,
+                |stream| {
+                    tx.query_row("SELECT COALESCE(MAX(version), 0) FROM events WHERE stream = ?1", [stream.to_string()], |r| r.get::<_, i64>(0))
+                        .map(|v| Version(v as u64))
+                        .map_err(backend)
+                },
+                |key| {
+                    tx.query_row("SELECT 1 FROM answers WHERE key = ?1", [key.to_string()], |_| Ok(()))
+                        .optional()
+                        .map(|f| f.is_some())
+                        .map_err(backend)
+                },
+                |kind, id| Ok(lease_of(tx, kind, id)?.and_then(|l| l.parse().ok())),
+            )?;
             let mut committed = Vec::new();
             for a in &unit.appends {
                 for e in &a.events {
@@ -758,15 +746,20 @@ impl Store for SqliteStore {
                 })
                 .optional()
                 .map_err(backend)?;
-            let mut stale = at != Some((i64::from(batch.version), batch.from.1 as i64));
+            check_batch(
+                &batch,
+                at.map(|(v, p)| (v as u32, Position(0, p as u64))),
+                |e| {
+                    tx.query_row("SELECT 1 FROM dead_letters WHERE projection = ?1 AND event = ?2", params![batch.projection, e.to_string()], |_| Ok(()))
+                        .optional()
+                        .map(|f| f.is_some())
+                        .map_err(backend)
+                },
+                |table| has_table(tx, &batch.projection, table),
+            )?;
             for e in &batch.resolved {
-                stale |= tx
-                    .execute("DELETE FROM dead_letters WHERE projection = ?1 AND event = ?2", params![batch.projection, e.to_string()])
-                    .map_err(backend)?
-                    == 0;
-            }
-            if stale {
-                return Err(StoreError::Stale(batch.projection));
+                tx.execute("DELETE FROM dead_letters WHERE projection = ?1 AND event = ?2", params![batch.projection, e.to_string()])
+                    .map_err(backend)?;
             }
             apply_ops(tx, &batch.projection, &batch.ops)?;
             for d in &batch.dead {

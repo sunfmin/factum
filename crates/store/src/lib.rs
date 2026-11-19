@@ -263,6 +263,66 @@ pub trait Store: Send + Sync + 'static {
     ) -> impl Future<Output = Result<Vec<DeadLetter>>> + Send;
 }
 
+/// Decides whether a unit commits, the way every store must: `Conflict` if a
+/// stream is not at the version its writer read, then `KeyTaken` if the key
+/// has an answer, then `LeaseLost` if a guard or release does not hold. The
+/// store supplies what it keeps: a stream's version, whether a key is
+/// answered, and a row's lease.
+pub fn check_unit(
+    unit: &Unit,
+    mut version: impl FnMut(&StreamId) -> Result<Version>,
+    answered: impl FnOnce(Uuid) -> Result<bool>,
+    mut lease: impl FnMut(WorkKind, Uuid) -> Result<Option<Uuid>>,
+) -> Result<()> {
+    for a in &unit.appends {
+        if version(&a.stream)? != a.expected {
+            return Err(StoreError::Conflict(a.stream.clone()));
+        }
+    }
+    if let Some((key, _)) = &unit.answer
+        && answered(*key)?
+    {
+        return Err(StoreError::KeyTaken(*key));
+    }
+    for (kind, id, held) in unit.leases() {
+        if lease(kind, id)? != Some(held) {
+            return Err(StoreError::LeaseLost);
+        }
+    }
+    Ok(())
+}
+
+/// Decides whether a batch applies, the way every store must: `Stale` unless
+/// the checkpoint is at the batch's version and `from` and every resolved
+/// dead letter is there, then `Undeclared` if an op names a table the
+/// projection was not built with. The store supplies its checkpoint's
+/// version and position, whether a dead letter (by event) is there, and
+/// whether a table is declared.
+pub fn check_batch(
+    batch: &Batch,
+    at: Option<(u32, Position)>,
+    mut dead: impl FnMut(Uuid) -> Result<bool>,
+    mut declared: impl FnMut(&str) -> Result<bool>,
+) -> Result<()> {
+    let mut stale = at != Some((batch.version, batch.from));
+    for e in &batch.resolved {
+        stale = stale || !dead(*e)?;
+    }
+    if stale {
+        return Err(StoreError::Stale(batch.projection.clone()));
+    }
+    for op in &batch.ops {
+        let (table, _) = op_target(op);
+        if !declared(table)? {
+            return Err(StoreError::Undeclared {
+                projection: batch.projection.clone(),
+                table: table.to_string(),
+            });
+        }
+    }
+    Ok(())
+}
+
 /// Gives an applied answer's events the positions they were committed at:
 /// a replay answers exactly what the first submission did.
 pub fn committed_answer(answer: &mut Answer, committed: &[Event]) {

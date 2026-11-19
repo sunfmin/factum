@@ -1,0 +1,32 @@
+{
+  "tree": "b8a265b2d58da0167278541feee60634109d7bbc+c5de23070c6c7196",
+  "picks": {
+    "rust": [
+      {
+        "name": "crates/store/src/lib.rs:278:32: replace != with == in check_unit",
+        "why": "Conflict decided",
+        "outcome": "killed"
+      },
+      {
+        "name": "crates/store/src/lib.rs:283:9: replace && with || in check_unit",
+        "why": "KeyTaken only when the key is answered",
+        "outcome": "unviable"
+      },
+      {
+        "name": "crates/store/src/lib.rs:307:24: replace != with == in check_batch",
+        "why": "Stale on a moved checkpoint",
+        "outcome": "killed"
+      },
+      {
+        "name": "crates/store/src/lib.rs:309:26: delete ! in check_batch",
+        "why": "Stale when a resolved dead letter is gone",
+        "outcome": "killed"
+      },
+      {
+        "name": "crates/store/src/lib.rs:316:12: delete ! in check_batch",
+        "why": "Undeclared on an undeclared table",
+        "outcome": "killed"
+      }
+    ]
+  }
+}
