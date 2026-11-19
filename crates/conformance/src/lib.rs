@@ -182,6 +182,7 @@ macro_rules! suite {
             a_store_error_ends_the_tick_and_a_fault_does_not,
             a_store_error_reaches_a_worker_as_it_is,
             projection_rows_follow_the_log_and_rebuild_the_same,
+            one_tick_catches_a_projection_up_batch_by_batch,
             a_projection_skips_an_event_it_fails_on,
             two_projectors_apply_each_event_once,
             a_projection_that_stops_holds_until_rebuilt,
