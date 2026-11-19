@@ -11,7 +11,7 @@ use factum_core::{
 
 use crate::{
     Answer, Batch, Checkpoint, Claim, DeadLetter, Result, Snapshot, Store, StoreError, Unit,
-    apply_op, op_target,
+    apply_op, claim_row, op_target,
 };
 
 #[derive(Default)]
@@ -231,15 +231,8 @@ impl Store for MemoryStore {
         let mut claimed = Vec::new();
         for (_, _, key) in due.into_iter().take(claim.limit) {
             let row = inner.work.get_mut(&key).expect("row just listed");
-            let w = &mut row.work;
-            w.taken_over = w.lease.is_some();
-            w.lease = Some(Uuid::now_v7());
-            w.holder = Some(claim.holder.clone());
-            w.lease_until = Some(claim.now.plus(claim.lease_ms));
-            w.claimed_at = Some(claim.now);
-            w.attempts += 1;
-            row.woken = None;
-            claimed.push(w.clone());
+            claim_row(&mut row.work, &mut row.woken, &claim);
+            claimed.push(row.work.clone());
         }
         Ok(claimed)
     }

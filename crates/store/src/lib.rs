@@ -290,3 +290,18 @@ pub fn op_target(op: &RowOp) -> (&str, &str) {
         | RowOp::Delete { table, key } => (table, key),
     }
 }
+
+/// Takes a row for a claim, the way every store must: a new lease for the
+/// claim's holder, an attempt counted, whether it was taken from a lease
+/// that ran out, and any wake that came meanwhile spent. `woken` is the
+/// store's record of that wake. Which rows a claim may take is each store's
+/// own query.
+pub fn claim_row(work: &mut Work, woken: &mut Option<Instant>, claim: &Claim) {
+    work.taken_over = work.lease.is_some();
+    work.lease = Some(Uuid::now_v7());
+    work.holder = Some(claim.holder.clone());
+    work.lease_until = Some(claim.now.plus(claim.lease_ms));
+    work.claimed_at = Some(claim.now);
+    work.attempts += 1;
+    *woken = None;
+}

@@ -88,7 +88,10 @@ short transaction; none holds a lock while the caller works.
 - `claim(kind, names, now, holder, lease, limit)` — due rows no live lease
   holds, oldest due first; of rows sharing a name and ordering key only the
   first put, and not before its pace. A claim takes a new lease, counts an
-  attempt, and says whether it took the row from a lease that ran out.
+  attempt, and says whether it took the row from a lease that ran out; the
+  row says so too, for as long as that claim holds it. What a claim does to
+  a row is `factum_store::claim_row`, one for every store; which rows it
+  may take is each store's own query.
 - `renew(...)` — only a lease that has not run out; `work(kind, id)`;
   `work_named(kind, name)`.
 - A wake that comes while a row is claimed survives the claim's release.

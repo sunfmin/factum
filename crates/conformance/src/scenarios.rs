@@ -754,11 +754,22 @@ pub async fn a_wake_while_a_runner_holds_the_process_is_not_lost<B: Backend>(b: 
     );
 }
 
+/// Whether the task's row, as the store keeps it, was taken over.
+async fn taken_over<S: Store>(e: &Engine<S>, task: Uuid) -> bool {
+    e.store()
+        .work(WorkKind::Task, task)
+        .await
+        .unwrap()
+        .expect("the task is pending")
+        .taken_over
+}
+
 pub async fn a_task_whose_lease_ran_out_is_taken_over<B: Backend>(b: &B) {
     let w = World::new(b);
     let e = w.engine("a");
     let (_, p) = fulfilling(&e).await;
     let first = e.claim_task("pack", "w1", 10_000).await.unwrap().unwrap();
+    assert!(!taken_over(&e, first.id).await);
     w.advance(10_000);
     assert_eq!(
         refused(e.heartbeat(&first, 10_000).await),
@@ -767,6 +778,10 @@ pub async fn a_task_whose_lease_ran_out_is_taken_over<B: Backend>(b: &B) {
     );
     let second = e.claim_task("pack", "w2", 10_000).await.unwrap().unwrap();
     assert_eq!(second.attempt, 2);
+    assert!(
+        taken_over(&e, second.id).await,
+        "the row reads as taken over while the claim that took it holds it"
+    );
     assert_eq!(refused(e.heartbeat(&first, 10_000).await), "lease_lost");
     assert_eq!(
         refused(e.finish_task(&first, Ok(json!("late")), "w1").await),

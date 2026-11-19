@@ -1,0 +1,22 @@
+{
+  "tree": "01ed0b43e35fef65f9749e668269c9f859b788eb+9a2a3ab67637fdc8",
+  "picks": {
+    "rust": [
+      {
+        "name": "crates/sqlite/src/lib.rs:281:5: replace rewrite -> Result<()> with Ok(())",
+        "why": "SQLite claim must write the stamped row back",
+        "outcome": "killed"
+      },
+      {
+        "name": "crates/store/src/lib.rs:300:5: replace claim_row with ()",
+        "why": "both stores stamp through claim_row",
+        "outcome": "killed"
+      },
+      {
+        "name": "crates/store/src/lib.rs:305:19: replace += with *= in claim_row",
+        "why": "a claim counts an attempt",
+        "outcome": "killed"
+      }
+    ]
+  }
+}
