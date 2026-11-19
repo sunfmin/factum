@@ -11,7 +11,7 @@ use factum_core::{
 
 use crate::{
     Answer, Batch, Checkpoint, Claim, DeadLetter, Result, Snapshot, Store, StoreError, Unit,
-    apply_op, claim_row, op_target,
+    apply_op, claim_row, op_target, release_row, wake_row,
 };
 
 #[derive(Default)]
@@ -99,11 +99,7 @@ impl Inner {
             }
             WorkChange::Wake { kind, id, due } => {
                 if let Some(row) = self.work.get_mut(&(kind, id)) {
-                    if row.work.lease.is_some() {
-                        row.woken = Some(row.woken.map_or(due, |w| w.min(due)));
-                    } else {
-                        row.work.due = row.work.due.min(due);
-                    }
+                    wake_row(&mut row.work, &mut row.woken, due);
                 }
             }
             WorkChange::Done { kind, id } => {
@@ -111,11 +107,7 @@ impl Inner {
             }
             WorkChange::Release { kind, id, due, .. } => {
                 if let Some(row) = self.work.get_mut(&(kind, id)) {
-                    row.work.due = row.woken.take().map_or(due, |w| w.min(due));
-                    row.work.lease = None;
-                    row.work.holder = None;
-                    row.work.lease_until = None;
-                    row.work.claimed_at = None;
+                    release_row(&mut row.work, &mut row.woken, due);
                 }
             }
             WorkChange::Pace {

@@ -24,7 +24,7 @@ use factum_core::{
 };
 use factum_store::{
     Answer, Batch, Checkpoint, Claim, DeadLetter, Result, Snapshot, Store, StoreError, Unit,
-    apply_op, claim_row, committed_answer, op_target,
+    apply_op, claim_row, committed_answer, op_target, release_row, wake_row,
 };
 use rusqlite::types::Value as Sql;
 use rusqlite::{
@@ -299,6 +299,28 @@ fn rewrite(tx: &Transaction, w: &Work, woken: Option<Instant>) -> Result<()> {
     .map_err(backend)
 }
 
+/// Moves a row, if it is there, by a transition of the store crate: read,
+/// changed, written back, in the one write transaction.
+fn transition(
+    tx: &Transaction,
+    kind: WorkKind,
+    id: Uuid,
+    f: impl FnOnce(&mut Work, &mut Option<Instant>),
+) -> Result<()> {
+    let sql = format!("SELECT {WORK_COLUMNS} FROM work WHERE kind = ?1 AND id = ?2");
+    match works(tx, &sql, params![kind.as_str(), id.to_string()])?.pop() {
+        Some(Stored {
+            mut work,
+            mut woken,
+            ..
+        }) => {
+            f(&mut work, &mut woken);
+            rewrite(tx, &work, woken)
+        }
+        None => Ok(()),
+    }
+}
+
 fn lease_of(tx: &Transaction, kind: WorkKind, id: Uuid) -> Result<Option<String>> {
     tx.query_row(
         "SELECT lease FROM work WHERE kind = ?1 AND id = ?2",
@@ -327,22 +349,15 @@ fn change(tx: &Transaction, change: &WorkChange) -> Result<()> {
                 w.attempts,
             ],
         ),
-        WorkChange::Wake { kind, id, due } => tx.execute(
-            "UPDATE work SET
-                woken = CASE WHEN lease IS NOT NULL THEN MIN(COALESCE(woken, ?3), ?3) ELSE woken END,
-                due = CASE WHEN lease IS NULL THEN MIN(due, ?3) ELSE due END
-             WHERE kind = ?1 AND id = ?2",
-            params![kind.as_str(), id.to_string(), due.0],
-        ),
+        WorkChange::Wake { kind, id, due } => {
+            return transition(tx, *kind, *id, |w, woken| wake_row(w, woken, *due));
+        }
         WorkChange::Done { kind, id } => {
             tx.execute("DELETE FROM work WHERE kind = ?1 AND id = ?2", params![kind.as_str(), id.to_string()])
         }
-        WorkChange::Release { kind, id, due, .. } => tx.execute(
-            "UPDATE work SET due = CASE WHEN woken IS NULL THEN ?3 ELSE MIN(woken, ?3) END,
-                woken = NULL, lease = NULL, holder = NULL, lease_until = NULL, claimed_at = NULL
-             WHERE kind = ?1 AND id = ?2",
-            params![kind.as_str(), id.to_string(), due.0],
-        ),
+        WorkChange::Release { kind, id, due, .. } => {
+            return transition(tx, *kind, *id, |w, woken| release_row(w, woken, *due));
+        }
         WorkChange::Pace { name, key, not_before } => tx.execute(
             "INSERT OR REPLACE INTO paces (name, key, not_before) VALUES (?1, ?2, ?3)",
             params![name, key, not_before.0],
