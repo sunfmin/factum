@@ -29,6 +29,10 @@ pub enum StoreError {
     /// A row op names a table its projection did not declare when it was
     /// last built. Nothing of the batch was written.
     Undeclared { projection: String, table: String },
+    /// The data was written by a later version of the store, whose schema
+    /// (`found`) this one, which knows schemas up to `known`, cannot read.
+    /// Refused when the store is opened, before any call.
+    NewerSchema { found: u32, known: u32 },
     /// The backend failed; nothing of the unit was written.
     Backend(String),
 }
@@ -43,6 +47,10 @@ impl std::fmt::Display for StoreError {
             StoreError::Undeclared { projection, table } => {
                 write!(f, "{projection} has no table {table}")
             }
+            StoreError::NewerSchema { found, known } => write!(
+                f,
+                "the store holds schema {found}, newer than this factum knows ({known})"
+            ),
             StoreError::Backend(e) => write!(f, "store: {e}"),
         }
     }

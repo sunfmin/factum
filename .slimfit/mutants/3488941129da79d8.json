@@ -1,0 +1,32 @@
+{
+  "tree": "f0d8793dd5cd24c4be1e9de143e927ee989b6a8f+63979b636477ca2d",
+  "picks": {
+    "rust": [
+      {
+        "name": "crates/sqlite/src/lib.rs:104:5: replace add_column -> rusqlite::Result<()> with Ok(())",
+        "why": "an old database never gets taken_over",
+        "outcome": "killed"
+      },
+      {
+        "name": "crates/sqlite/src/lib.rs:106:8: delete ! in add_column",
+        "why": "the step must add the column only when it is missing (hand-repaired hosts)",
+        "outcome": "killed"
+      },
+      {
+        "name": "crates/sqlite/src/lib.rs:115:5: replace migrate -> Result<()> with Ok(())",
+        "why": "no schema at all is made or brought up",
+        "outcome": "killed"
+      },
+      {
+        "name": "crates/sqlite/src/lib.rs:120:18: replace <= with > in migrate",
+        "why": "steps run only when the schema is known",
+        "outcome": "killed"
+      },
+      {
+        "name": "crates/sqlite/src/lib.rs:130:14: replace > with >= in migrate",
+        "why": "the current schema must open, only a newer one is refused",
+        "outcome": "killed"
+      }
+    ]
+  }
+}

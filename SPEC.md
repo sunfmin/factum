@@ -109,6 +109,12 @@ short transaction; none holds a lock while the caller works.
 
 A row a store cannot decode is an error, never a guessed value.
 
+**Data written by an earlier version opens with a later one.** A store
+knows the schema version it finds and brings it up to its own when it is
+opened, one step per schema change, all in one transaction; a schema
+newer than it knows is refused at open (`NewerSchema`), before any call.
+A released step is never edited: a change to the schema is a new step.
+
 Each store implements these as its backend allows: SQLite's single writer
 makes commit order the sequence order, and Postgres will need an
 appending-transaction horizon and `SKIP LOCKED` claims. Those details stay
@@ -136,6 +142,12 @@ mutations of the engine, core and in-memory store, and 13 of 14 of the
 SQLite store, are caught. The one not caught (a snapshot replaced by an
 older one) changes no answer, only how long a fold takes. The SQLite suite
 passed 30 runs of 30 in a row.
+
+A store's file format is the one thing the engine's API cannot reach, so
+it is tested beside the store: `crates/sqlite/tests/conformance.rs` starts
+every scenario's database from the schema as an earlier release wrote it
+(copied, not derived from the code) and holds its migrated
+shape to a new database's, so a schema change without a step fails.
 
 ## 5. Migration: bizkernel onto factum
 

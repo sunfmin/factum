@@ -34,8 +34,10 @@ use rusqlite::{
 
 use crate::thread::Worker;
 
-const SCHEMA: &str = "
-PRAGMA journal_mode = WAL;
+/// The first schema, as factum wrote it before schemas had versions. A
+/// database of that time holds it at version 0, so each table is made only
+/// if it is not there.
+const FIRST: &str = "
 CREATE TABLE IF NOT EXISTS events (
     seq INTEGER PRIMARY KEY AUTOINCREMENT,
     id TEXT NOT NULL UNIQUE,
@@ -64,7 +66,6 @@ CREATE TABLE IF NOT EXISTS work (
     lease_until INTEGER,
     claimed_at INTEGER,
     woken INTEGER,
-    taken_over INTEGER NOT NULL DEFAULT 0,
     PRIMARY KEY (kind, id)
 );
 CREATE INDEX IF NOT EXISTS work_due ON work (kind, due);
@@ -89,6 +90,50 @@ CREATE TABLE IF NOT EXISTS dead_letters (
 );
 ";
 
+/// The schema, one step per change, in order: a database's `user_version`
+/// is how many it has had. A released step is never edited; a change to the
+/// schema is a step added at the end (the fixture of an older schema in
+/// `tests/conformance.rs` fails otherwise).
+const STEPS: &[fn(&Transaction) -> rusqlite::Result<()>] = &[
+    |tx| tx.execute_batch(FIRST),
+    // factum#14. Some hosts had it added by hand before this step existed.
+    |tx| add_column(tx, "work", "taken_over", "INTEGER NOT NULL DEFAULT 0"),
+];
+
+fn add_column(tx: &Transaction, table: &str, column: &str, def: &str) -> rusqlite::Result<()> {
+    let sql = "SELECT COUNT(*) > 0 FROM pragma_table_info(?1) WHERE name = ?2";
+    let there: bool = tx.query_row(sql, params![table, column], |r| r.get(0))?;
+    if !there {
+        tx.execute_batch(&format!("ALTER TABLE {table} ADD COLUMN {column} {def}"))?;
+    }
+    Ok(())
+}
+
+/// Brings the database up to `STEPS`, all in one transaction, or refuses
+/// one whose schema is newer than this code knows.
+fn migrate(conn: &mut Connection) -> Result<()> {
+    let known = STEPS.len() as u32;
+    let found = (|| -> rusqlite::Result<u32> {
+        conn.execute_batch("PRAGMA journal_mode = WAL;")?;
+        let tx = conn.transaction_with_behavior(TransactionBehavior::Immediate)?;
+        let found: u32 = tx.query_row("PRAGMA user_version", [], |r| r.get(0))?;
+        if found <= known {
+            for step in &STEPS[found as usize..] {
+                step(&tx)?;
+            }
+            tx.execute_batch(&format!("PRAGMA user_version = {known}"))?;
+            tx.commit()?;
+        }
+        Ok(found)
+    })()
+    .map_err(backend)?;
+    if found > known {
+        Err(StoreError::NewerSchema { found, known })
+    } else {
+        Ok(())
+    }
+}
+
 pub struct SqliteStore {
     worker: Worker,
     path: PathBuf,
@@ -111,12 +156,13 @@ fn uuid(s: &str) -> Result<Uuid> {
 }
 
 impl SqliteStore {
-    /// Opens the database at `path`, creating it and its tables if needed.
+    /// Opens the database at `path`, creating it if needed and bringing its
+    /// schema up to this code's (`StoreError::NewerSchema` if it is newer).
     pub fn open(path: impl AsRef<Path>) -> Result<SqliteStore> {
-        let conn = Connection::open(path.as_ref()).map_err(backend)?;
+        let mut conn = Connection::open(path.as_ref()).map_err(backend)?;
         conn.busy_timeout(Duration::from_secs(10))
             .map_err(backend)?;
-        conn.execute_batch(SCHEMA).map_err(backend)?;
+        migrate(&mut conn)?;
         Ok(SqliteStore {
             worker: Worker::start(conn).map_err(backend)?,
             path: path.as_ref().to_path_buf(),
