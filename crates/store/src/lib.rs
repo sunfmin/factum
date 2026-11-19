@@ -290,3 +290,39 @@ pub fn op_target(op: &RowOp) -> (&str, &str) {
         | RowOp::Delete { table, key } => (table, key),
     }
 }
+
+/// Takes a row for a claim, the way every store must: a new lease for the
+/// claim's holder, an attempt counted, whether it was taken from a lease
+/// that ran out, and any wake that came meanwhile spent. `woken` is the
+/// store's record of that wake. Which rows a claim may take is each store's
+/// own query.
+pub fn claim_row(work: &mut Work, woken: &mut Option<Instant>, claim: &Claim) {
+    work.taken_over = work.lease.is_some();
+    work.lease = Some(Uuid::now_v7());
+    work.holder = Some(claim.holder.clone());
+    work.lease_until = Some(claim.now.plus(claim.lease_ms));
+    work.claimed_at = Some(claim.now);
+    work.attempts += 1;
+    *woken = None;
+}
+
+/// Wakes a row at `due`, the way every store must: a row a claim holds
+/// keeps the wake in `woken` for its release; any other is due by then.
+pub fn wake_row(work: &mut Work, woken: &mut Option<Instant>, due: Instant) {
+    if work.lease.is_some() {
+        *woken = Some(woken.map_or(due, |w| w.min(due)));
+    } else {
+        work.due = work.due.min(due);
+    }
+}
+
+/// Releases a row from its claim, the way every store must: due at `due`,
+/// or at a wake that came while it was held if that is sooner.
+pub fn release_row(work: &mut Work, woken: &mut Option<Instant>, due: Instant) {
+    work.due = woken.take().map_or(due, |w| w.min(due));
+    work.lease = None;
+    work.holder = None;
+    work.lease_until = None;
+    work.claimed_at = None;
+    work.taken_over = false;
+}

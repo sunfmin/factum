@@ -88,10 +88,14 @@ short transaction; none holds a lock while the caller works.
 - `claim(kind, names, now, holder, lease, limit)` — due rows no live lease
   holds, oldest due first; of rows sharing a name and ordering key only the
   first put, and not before its pace. A claim takes a new lease, counts an
-  attempt, and says whether it took the row from a lease that ran out.
+  attempt, and says whether it took the row from a lease that ran out; the
+  row says so too, for as long as that claim holds it.
 - `renew(...)` — only a lease that has not run out; `work(kind, id)`;
   `work_named(kind, name)`.
 - A wake that comes while a row is claimed survives the claim's release.
+- What a claim, a wake and a release do to a row is the store crate's
+  (`claim_row`, `wake_row`, `release_row`), one for every store; which rows
+  a claim may take is each store's own query.
 - `snapshot` / `keep_snapshot`; `checkpoint` / `reset_projection` /
   `apply_projection`; `query`, `rows`, `row`, `dead_letters`. A batch is
   one move of a projection — rows, new dead letters, retried dead letters

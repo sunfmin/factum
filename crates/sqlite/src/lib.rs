@@ -24,7 +24,7 @@ use factum_core::{
 };
 use factum_store::{
     Answer, Batch, Checkpoint, Claim, DeadLetter, Result, Snapshot, Store, StoreError, Unit,
-    apply_op, committed_answer, op_target,
+    apply_op, claim_row, committed_answer, op_target, release_row, wake_row,
 };
 use rusqlite::types::Value as Sql;
 use rusqlite::{
@@ -63,6 +63,7 @@ CREATE TABLE IF NOT EXISTS work (
     lease_until INTEGER,
     claimed_at INTEGER,
     woken INTEGER,
+    taken_over INTEGER NOT NULL DEFAULT 0,
     PRIMARY KEY (kind, id)
 );
 CREATE INDEX IF NOT EXISTS work_due ON work (kind, due);
@@ -193,7 +194,7 @@ fn events(conn: &Connection, sql: &str, args: impl rusqlite::Params) -> Result<V
         .collect()
 }
 
-const WORK_COLUMNS: &str = "kind, id, name, process, step, payload, due, ordering_key, attempts, lease, holder, lease_until, claimed_at, seq";
+const WORK_COLUMNS: &str = "kind, id, name, process, step, payload, due, ordering_key, attempts, lease, holder, lease_until, claimed_at, seq, woken, taken_over";
 
 /// A work row as read, before its columns are decoded.
 struct WorkRow {
@@ -211,6 +212,8 @@ struct WorkRow {
     lease_until: Option<i64>,
     claimed_at: Option<i64>,
     seq: i64,
+    woken: Option<i64>,
+    taken_over: bool,
 }
 
 fn work(row: &Row) -> rusqlite::Result<WorkRow> {
@@ -229,11 +232,14 @@ fn work(row: &Row) -> rusqlite::Result<WorkRow> {
         lease_until: row.get(11)?,
         claimed_at: row.get(12)?,
         seq: row.get(13)?,
+        woken: row.get(14)?,
+        taken_over: row.get(15)?,
     })
 }
 
-/// A work row decoded; a column it cannot decode is an error, never a guess.
-fn to_work(r: WorkRow) -> Result<(Work, i64)> {
+/// A work row decoded, with its sequence number and the wake it keeps; a
+/// column it cannot decode is an error, never a guess.
+fn to_work(r: WorkRow) -> Result<Stored> {
     let w = Work {
         kind: WorkKind::parse(&r.kind)
             .ok_or_else(|| backend(format!("work row of unknown kind {:?}", r.kind)))?,
@@ -249,15 +255,70 @@ fn to_work(r: WorkRow) -> Result<(Work, i64)> {
         holder: r.holder,
         lease_until: r.lease_until.map(Instant),
         claimed_at: r.claimed_at.map(Instant),
-        taken_over: false,
+        taken_over: r.taken_over,
     };
-    Ok((w, r.seq))
+    Ok(Stored {
+        work: w,
+        seq: r.seq,
+        woken: r.woken.map(Instant),
+    })
 }
 
-fn works(conn: &Connection, sql: &str, args: impl rusqlite::Params) -> Result<Vec<(Work, i64)>> {
+struct Stored {
+    work: Work,
+    seq: i64,
+    woken: Option<Instant>,
+}
+
+fn works(conn: &Connection, sql: &str, args: impl rusqlite::Params) -> Result<Vec<Stored>> {
     let mut stmt = conn.prepare(sql).map_err(backend)?;
     let rows = stmt.query_map(args, work).map_err(backend)?;
     rows.map(|r| r.map_err(backend).and_then(to_work)).collect()
+}
+
+/// Writes back what a row transition of the store crate changed.
+fn rewrite(tx: &Transaction, w: &Work, woken: Option<Instant>) -> Result<()> {
+    tx.execute(
+        "UPDATE work SET due = ?3, attempts = ?4, lease = ?5, holder = ?6, lease_until = ?7, claimed_at = ?8,
+            taken_over = ?9, woken = ?10
+         WHERE kind = ?1 AND id = ?2",
+        params![
+            w.kind.as_str(),
+            w.id.to_string(),
+            w.due.0,
+            w.attempts,
+            w.lease.map(|l| l.to_string()),
+            w.holder,
+            w.lease_until.map(|i| i.0),
+            w.claimed_at.map(|i| i.0),
+            w.taken_over,
+            woken.map(|i| i.0),
+        ],
+    )
+    .map(|_| ())
+    .map_err(backend)
+}
+
+/// Moves a row, if it is there, by a transition of the store crate: read,
+/// changed, written back, in the one write transaction.
+fn transition(
+    tx: &Transaction,
+    kind: WorkKind,
+    id: Uuid,
+    f: impl FnOnce(&mut Work, &mut Option<Instant>),
+) -> Result<()> {
+    let sql = format!("SELECT {WORK_COLUMNS} FROM work WHERE kind = ?1 AND id = ?2");
+    match works(tx, &sql, params![kind.as_str(), id.to_string()])?.pop() {
+        Some(Stored {
+            mut work,
+            mut woken,
+            ..
+        }) => {
+            f(&mut work, &mut woken);
+            rewrite(tx, &work, woken)
+        }
+        None => Ok(()),
+    }
 }
 
 fn lease_of(tx: &Transaction, kind: WorkKind, id: Uuid) -> Result<Option<String>> {
@@ -288,22 +349,15 @@ fn change(tx: &Transaction, change: &WorkChange) -> Result<()> {
                 w.attempts,
             ],
         ),
-        WorkChange::Wake { kind, id, due } => tx.execute(
-            "UPDATE work SET
-                woken = CASE WHEN lease IS NOT NULL THEN MIN(COALESCE(woken, ?3), ?3) ELSE woken END,
-                due = CASE WHEN lease IS NULL THEN MIN(due, ?3) ELSE due END
-             WHERE kind = ?1 AND id = ?2",
-            params![kind.as_str(), id.to_string(), due.0],
-        ),
+        WorkChange::Wake { kind, id, due } => {
+            return transition(tx, *kind, *id, |w, woken| wake_row(w, woken, *due));
+        }
         WorkChange::Done { kind, id } => {
             tx.execute("DELETE FROM work WHERE kind = ?1 AND id = ?2", params![kind.as_str(), id.to_string()])
         }
-        WorkChange::Release { kind, id, due, .. } => tx.execute(
-            "UPDATE work SET due = CASE WHEN woken IS NULL THEN ?3 ELSE MIN(woken, ?3) END,
-                woken = NULL, lease = NULL, holder = NULL, lease_until = NULL, claimed_at = NULL
-             WHERE kind = ?1 AND id = ?2",
-            params![kind.as_str(), id.to_string(), due.0],
-        ),
+        WorkChange::Release { kind, id, due, .. } => {
+            return transition(tx, *kind, *id, |w, woken| release_row(w, woken, *due));
+        }
         WorkChange::Pace { name, key, not_before } => tx.execute(
             "INSERT OR REPLACE INTO paces (name, key, not_before) VALUES (?1, ?2, ?3)",
             params![name, key, not_before.0],
@@ -530,7 +584,7 @@ impl Store for SqliteStore {
                  ORDER BY due, seq"
             );
             let mut claimed = Vec::new();
-            for (mut w, seq) in works(tx, &sql, params![claim.kind.as_str(), claim.now.0])? {
+            for Stored { work: mut w, seq, mut woken } in works(tx, &sql, params![claim.kind.as_str(), claim.now.0])? {
                 if claimed.len() >= claim.limit {
                     break;
                 }
@@ -553,26 +607,8 @@ impl Store for SqliteStore {
                         continue;
                     }
                 }
-                w.taken_over = w.lease.is_some();
-                w.lease = Some(Uuid::now_v7());
-                w.holder = Some(claim.holder.clone());
-                w.lease_until = Some(claim.now.plus(claim.lease_ms));
-                w.claimed_at = Some(claim.now);
-                w.attempts += 1;
-                tx.execute(
-                    "UPDATE work SET lease = ?3, holder = ?4, lease_until = ?5, claimed_at = ?6, attempts = ?7, woken = NULL
-                     WHERE kind = ?1 AND id = ?2",
-                    params![
-                        w.kind.as_str(),
-                        w.id.to_string(),
-                        w.lease.map(|l| l.to_string()),
-                        w.holder,
-                        w.lease_until.map(|i| i.0),
-                        w.claimed_at.map(|i| i.0),
-                        w.attempts,
-                    ],
-                )
-                .map_err(backend)?;
+                claim_row(&mut w, &mut woken, &claim);
+                rewrite(tx, &w, woken)?;
                 claimed.push(w);
             }
             Ok(claimed)
@@ -606,7 +642,7 @@ impl Store for SqliteStore {
             Ok(works(c, &sql, params![kind.as_str(), id.to_string()])?
                 .into_iter()
                 .next()
-                .map(|(w, _)| w))
+                .map(|s| s.work))
         })
         .await
     }
@@ -619,7 +655,7 @@ impl Store for SqliteStore {
             );
             Ok(works(c, &sql, params![kind.as_str(), name])?
                 .into_iter()
-                .map(|(w, _)| w)
+                .map(|s| s.work)
                 .collect())
         })
         .await
