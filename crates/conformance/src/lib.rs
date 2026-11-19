@@ -145,6 +145,7 @@ macro_rules! suite {
             a_refusal_that_loses_its_key_answers_what_the_key_holds,
             a_plan_records_nothing,
             a_writer_that_read_an_old_version_decides_again,
+            a_writer_that_loses_every_race_gives_up,
             versions_stay_unique_under_two_writers,
             an_ended_stream_refuses_every_command,
             a_stream_ended_by_a_scheduling_command_stays_ended,

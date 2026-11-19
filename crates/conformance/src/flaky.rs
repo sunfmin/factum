@@ -15,6 +15,7 @@ pub struct Flaky<S> {
     inner: Arc<S>,
     crash: Mutex<Option<Matches>>,
     race: Mutex<Option<(Matches, BoxFuture<()>)>>,
+    lose: Mutex<Option<Matches>>,
     batch_race: Mutex<Option<(String, BoxFuture<()>)>>,
 }
 
@@ -24,6 +25,7 @@ impl<S: Store> Flaky<S> {
             inner,
             crash: Mutex::new(None),
             race: Mutex::new(None),
+            lose: Mutex::new(None),
             batch_race: Mutex::new(None),
         }
     }
@@ -48,6 +50,12 @@ impl<S: Store> Flaky<S> {
         writer: BoxFuture<()>,
     ) {
         *self.race.lock().unwrap() = Some((Box::new(matches), writer));
+    }
+
+    /// From now on, every commit that matches loses its race, writing
+    /// nothing, as if another writer always got to its stream first.
+    pub fn lose_every(&self, matches: impl Fn(&Unit) -> bool + Send + Sync + 'static) {
+        *self.lose.lock().unwrap() = Some(Box::new(matches));
     }
 }
 
@@ -96,6 +104,10 @@ impl<S: Store> Store for Flaky<S> {
         };
         if let Some(writer) = writer {
             writer.await;
+        }
+        if self.lose.lock().unwrap().as_ref().is_some_and(|m| m(&unit)) {
+            let stream = unit.appends.first().expect("a unit that loses appends");
+            return Err(StoreError::Conflict(stream.stream.clone()));
         }
         self.inner.commit(unit).await
     }

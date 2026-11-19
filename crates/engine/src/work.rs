@@ -9,7 +9,7 @@ use factum_core::{
 use factum_store::{Claim, Store, StoreError, Unit};
 use serde_json::json;
 
-use crate::engine::{Engine, Error, Fault, Submission, Write, rejected, set_aside};
+use crate::engine::{Engine, Error, Fault, Races, Submission, Write, rejected, set_aside};
 use crate::model::ActionAnswer;
 
 /// A task a worker holds.
@@ -84,6 +84,7 @@ impl<S: Store> Engine<S> {
             lease,
             due,
         };
+        let mut races = Races::new();
         loop {
             let (state, version) = self.process_events(id).await?;
             let decision = match self.model.processes.get(&state.name) {
@@ -177,7 +178,7 @@ impl<S: Store> Engine<S> {
             {
                 Ok(()) if waits || finishing => break,
                 Ok(()) => continue,
-                Err(StoreError::Conflict(_)) => crate::engine::yield_now().await,
+                Err(StoreError::Conflict(_)) => races.lost(format!("advancing {stream}")).await?,
                 Err(StoreError::LeaseLost) => return Ok(()),
                 Err(e) => return Err(e.into()),
             }
@@ -228,6 +229,7 @@ impl<S: Store> Engine<S> {
         guard: Option<(WorkKind, Uuid)>,
         work: &[WorkChange],
     ) -> Result<bool, Error> {
+        let mut races = Races::new();
         loop {
             let (state, version) = self.process_events(process).await?;
             if state.progress.steps.contains_key(key) || !state.requested.contains_key(key) {
@@ -254,7 +256,11 @@ impl<S: Store> Engine<S> {
                 .await
             {
                 Ok(()) => return Ok(true),
-                Err(StoreError::Conflict(_)) => crate::engine::yield_now().await,
+                Err(StoreError::Conflict(_)) => {
+                    races
+                        .lost(format!("answering {key} of {PROCESS}/{process}"))
+                        .await?
+                }
                 Err(StoreError::LeaseLost) => return Ok(false),
                 Err(e) => return Err(e.into()),
             }

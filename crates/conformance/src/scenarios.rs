@@ -249,6 +249,57 @@ pub async fn a_writer_that_read_an_old_version_decides_again<B: Backend>(b: &B) 
     assert_eq!(versions, [Version(1), Version(2)]);
 }
 
+/// The give-up fault of a writer that lost every race, from `result` or
+/// from the tick that set it aside.
+fn gave_up(error: impl std::fmt::Display) {
+    let error = error.to_string();
+    assert!(error.contains("gave up after losing 1000 races"), "{error}");
+}
+
+/// A writer that never gives up hangs here; this fails it instead.
+async fn within_10s<T>(what: &str, f: impl std::future::Future<Output = T>) -> T {
+    tokio::time::timeout(std::time::Duration::from_secs(10), f)
+        .await
+        .unwrap_or_else(|_| panic!("{what} kept deciding again past the bound"))
+}
+
+pub async fn a_writer_that_loses_every_race_gives_up<B: Backend>(b: &B) {
+    let w = World::new(b);
+    let (a, flaky) = w.flaky("a");
+
+    // A command.
+    let c = id();
+    flaky.lose_every(|u| appends(u, "Added"));
+    let add = sub("counter.add", json!({ "counter": c, "n": 1 }));
+    match within_10s("submit", a.submit(add)).await {
+        Err(e @ Error::Fault(_)) => gave_up(e),
+        other => panic!("expected a give-up fault, got {other:?}"),
+    }
+
+    // A process's advance: the tick sets the process aside and goes on.
+    let (_, p) = checkout(&a, 500).await;
+    flaky.lose_every(|u| appends(u, "StepRecorded") || appends(u, "StepRequested"));
+    let tick = within_10s("advance", a.tick()).await.unwrap();
+    let fault = tick
+        .faults
+        .iter()
+        .find(|f| f.item == format!("process/{p}"))
+        .unwrap_or_else(|| panic!("no fault for process/{p}: {tick:?}"));
+    gave_up(&fault.error);
+
+    // A step's answer.
+    flaky.lose_every(|_| false);
+    let (_, p) = fulfilling(&a).await;
+    let task = a.claim_task("pack", "w1", 10_000).await.unwrap().unwrap();
+    flaky.lose_every(|u| records_step(u, "pack"));
+    let answer = a.finish_task(&task, Ok(json!({ "box": 1 })), "w1");
+    match within_10s("answer", answer).await {
+        Err(e @ Error::Fault(_)) => gave_up(e),
+        other => panic!("expected a give-up fault, got {other:?}"),
+    }
+    assert_eq!(a.process(p).await.unwrap().progress.outcome("pack"), None);
+}
+
 pub async fn versions_stay_unique_under_two_writers<B: Backend>(b: &B) {
     let w = World::new(b);
     let (a, bb) = (w.engine("a"), w.engine("b"));
