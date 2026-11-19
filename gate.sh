@@ -20,4 +20,5 @@ budget sqlite 3000
 
 cargo fmt --all --check
 cargo clippy --workspace --all-targets --quiet -- -D warnings
-cargo test --workspace --quiet
+# Every scenario on every store, measured against .slimfit/baseline.json.
+slimfit check

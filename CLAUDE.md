@@ -12,9 +12,11 @@
 - A new scenario must fail when the rule it guards is broken: break the
   rule, see it fail, restore.
 - `./gate.sh` must pass before every commit: line budgets, `cargo fmt`,
-  clippy with warnings denied, every scenario on every store.
+  clippy with warnings denied, every scenario on every store (`slimfit check`).
 - Key derivations in `crates/core/src/keys.rs` are bizkernel's byte for
   byte; changing one breaks the keys already in logs.
+- Each change follows `slimfit next`'s loop and the rule for its mutants
+  in `slimfit help factorium` (run `slimfit help` for the rest).
 
 ## Agent skills
 
