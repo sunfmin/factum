@@ -10,8 +10,8 @@ use factum_core::{
 };
 
 use crate::{
-    Answer, Batch, Checkpoint, Claim, DeadLetter, Result, Snapshot, Store, StoreError, Unit,
-    apply_op, claim_row, op_target, release_row, wake_row,
+    Answer, Batch, Checkpoint, Claim, DeadLetter, Result, Snapshot, Store, Unit, apply_op,
+    check_batch, check_unit, claim_row, op_target, release_row, wake_row,
 };
 
 #[derive(Default)]
@@ -54,31 +54,12 @@ impl Inner {
     }
 
     fn check(&self, unit: &Unit) -> Result<()> {
-        for a in &unit.appends {
-            if self.version(&a.stream) != a.expected {
-                return Err(StoreError::Conflict(a.stream.clone()));
-            }
-        }
-        if let Some((key, _)) = &unit.answer
-            && self.answers.contains_key(key)
-        {
-            return Err(StoreError::KeyTaken(*key));
-        }
-        for (kind, id, lease) in &unit.guards {
-            if self.work.get(&(*kind, *id)).and_then(|r| r.work.lease) != Some(*lease) {
-                return Err(StoreError::LeaseLost);
-            }
-        }
-        for change in &unit.work {
-            if let WorkChange::Release {
-                kind, id, lease, ..
-            } = change
-                && self.work.get(&(*kind, *id)).and_then(|r| r.work.lease) != Some(*lease)
-            {
-                return Err(StoreError::LeaseLost);
-            }
-        }
-        Ok(())
+        check_unit(
+            unit,
+            |stream| Ok(self.version(stream)),
+            |key| Ok(self.answers.contains_key(&key)),
+            |kind, id| Ok(self.work.get(&(kind, id)).and_then(|r| r.work.lease)),
+        )
     }
 
     fn change(&mut self, change: WorkChange) {
@@ -312,28 +293,18 @@ impl Store for MemoryStore {
     async fn apply_projection(&self, batch: Batch) -> Result<()> {
         let mut inner = self.lock();
         let p = &batch.projection;
-        let at = inner.checkpoints.get(p);
-        let gone = batch.resolved.iter().any(|e| {
-            !inner
-                .dead
-                .iter()
-                .any(|d| d.projection == *p && d.event == *e)
-        });
-        if gone || at.is_none_or(|c| c.version != batch.version || c.position != batch.from) {
-            return Err(StoreError::Stale(p.clone()));
-        }
         let declared = inner.tables.get(p).map_or(&[][..], Vec::as_slice);
-        if let Some((table, _)) = batch
-            .ops
-            .iter()
-            .map(op_target)
-            .find(|(t, _)| !declared.iter().any(|d| d == t))
-        {
-            return Err(StoreError::Undeclared {
-                projection: p.clone(),
-                table: table.to_string(),
-            });
-        }
+        check_batch(
+            &batch,
+            inner.checkpoints.get(p).map(|c| (c.version, c.position)),
+            |e| {
+                Ok(inner
+                    .dead
+                    .iter()
+                    .any(|d| d.projection == *p && d.event == e))
+            },
+            |table| Ok(declared.iter().any(|d| d == table)),
+        )?;
         for op in &batch.ops {
             let (table, key) = op_target(op);
             let k = (p.clone(), table.to_string(), key.to_string());

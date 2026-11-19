@@ -564,6 +564,48 @@ pub async fn a_call_that_fails_for_now_is_tried_again_then_given_up<B: Backend>(
     assert_eq!(status(&e, o).await, "placed");
 }
 
+pub async fn a_retry_whose_lease_ran_out_meanwhile_changes_nothing<B: Backend>(b: &B) {
+    let w = World::new(b);
+    let (a, flaky) = w.flaky("a");
+    w.payments.busy.store(2, Ordering::SeqCst);
+    // Just before a lets the busy charge go to be tried again, its lease runs
+    // out and b takes the charge, which is busy again: b lets it go, due two
+    // seconds on.
+    let (other, clock) = (w.engine("b"), w.clock.clone());
+    flaky.race_on(
+        |u| {
+            u.appends.is_empty()
+                && u.work.iter().any(|c| {
+                    matches!(
+                        c,
+                        WorkChange::Release {
+                            kind: WorkKind::Action,
+                            ..
+                        }
+                    )
+                })
+        },
+        Box::pin(async move {
+            clock.advance(30_000);
+            other.tick().await.unwrap();
+        }),
+    );
+    let (_, p) = checkout(&a, 500).await;
+    a.settle().await.unwrap();
+    assert_eq!(
+        w.payments.calls(),
+        2,
+        "a's release under the lease it lost does not make the charge due"
+    );
+    w.advance(2_000);
+    a.settle().await.unwrap();
+    assert_eq!(w.payments.calls(), 3);
+    assert!(matches!(
+        finished(&a, p).await,
+        Some(Finished::Completed(_))
+    ));
+}
+
 pub async fn two_runners_take_each_step_once<B: Backend>(b: &B) {
     let w = World::new(b);
     let (a, bb) = (w.engine("a"), w.engine("b"));

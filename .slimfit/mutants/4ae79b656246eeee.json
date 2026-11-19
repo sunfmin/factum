@@ -1,0 +1,22 @@
+{
+  "tree": "89c013a14b1050610558ff5a43aafe7ab0cc8a43+fa2dd505096b6bbe",
+  "picks": {
+    "rust": [
+      {
+        "name": "crates/store/src/lib.rs:90:9: replace Unit::leases -> impl Iterator<Item =(WorkKind, Uuid, Uuid)>+'_ with ::std::iter::empty()",
+        "why": "no leases checked: guards and releases must still be refused",
+        "outcome": "killed"
+      },
+      {
+        "name": "crates/store/src/lib.rs:91:13: delete match arm WorkChange::Release{kind, id, lease, ..} in Unit::leases",
+        "why": "releases dropped from the list: a stale release must be LeaseLost",
+        "outcome": "killed"
+      },
+      {
+        "name": "crates/store/src/memory.rs:68:70: replace != with == in Inner::check",
+        "why": "the lease comparison itself",
+        "outcome": "killed"
+      }
+    ]
+  }
+}
