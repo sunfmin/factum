@@ -84,6 +84,19 @@ pub struct Unit {
     pub guards: Vec<(WorkKind, Uuid, Uuid)>,
 }
 
+impl Unit {
+    /// Every lease the unit needs still held: its guards, then its releases.
+    pub fn leases(&self) -> impl Iterator<Item = (WorkKind, Uuid, Uuid)> + '_ {
+        let releases = self.work.iter().filter_map(|c| match c {
+            WorkChange::Release {
+                kind, id, lease, ..
+            } => Some((*kind, *id, *lease)),
+            _ => None,
+        });
+        self.guards.iter().copied().chain(releases)
+    }
+}
+
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct Snapshot {
     pub version: Version,

@@ -532,11 +532,7 @@ impl Store for SqliteStore {
                     return Err(StoreError::KeyTaken(*key));
                 }
             }
-            let releases = unit.work.iter().filter_map(|c| match c {
-                WorkChange::Release { kind, id, lease, .. } => Some((*kind, *id, *lease)),
-                _ => None,
-            });
-            for (kind, id, lease) in unit.guards.iter().copied().chain(releases) {
+            for (kind, id, lease) in unit.leases() {
                 if lease_of(tx, kind, id)? != Some(lease.to_string()) {
                     return Err(StoreError::LeaseLost);
                 }

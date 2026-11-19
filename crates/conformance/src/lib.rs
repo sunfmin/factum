@@ -158,6 +158,7 @@ macro_rules! suite {
             a_call_whose_answer_was_lost_is_made_again_and_done_once,
             an_at_most_once_call_whose_answer_was_lost_ends_unknown,
             a_call_that_fails_for_now_is_tried_again_then_given_up,
+            a_retry_whose_lease_ran_out_meanwhile_changes_nothing,
             two_runners_take_each_step_once,
             a_runner_that_dies_loses_its_process_to_another,
             starting_a_process_again,

@@ -64,17 +64,8 @@ impl Inner {
         {
             return Err(StoreError::KeyTaken(*key));
         }
-        for (kind, id, lease) in &unit.guards {
-            if self.work.get(&(*kind, *id)).and_then(|r| r.work.lease) != Some(*lease) {
-                return Err(StoreError::LeaseLost);
-            }
-        }
-        for change in &unit.work {
-            if let WorkChange::Release {
-                kind, id, lease, ..
-            } = change
-                && self.work.get(&(*kind, *id)).and_then(|r| r.work.lease) != Some(*lease)
-            {
+        for (kind, id, lease) in unit.leases() {
+            if self.work.get(&(kind, id)).and_then(|r| r.work.lease) != Some(lease) {
                 return Err(StoreError::LeaseLost);
             }
         }
