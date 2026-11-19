@@ -1,0 +1,22 @@
+{
+  "tree": "01ed0b43e35fef65f9749e668269c9f859b788eb+2b44b2bc902441ac",
+  "picks": {
+    "rust": [
+      {
+        "name": "crates/engine/src/projector.rs:27:9: replace Keeper<'_>::version -> u32 with 1",
+        "why": "a dead letter read must see the projection's own version",
+        "outcome": "killed"
+      },
+      {
+        "name": "crates/engine/src/projector.rs:35:9: replace Keeper<'_>::tables -> Vec<Table> with vec![]",
+        "why": "a dead letter read must see the projection's own tables",
+        "outcome": "killed"
+      },
+      {
+        "name": "crates/engine/src/projector.rs:59:17: replace == with != in Engine<S>::keeper",
+        "why": "dispatch and projections must keep their own checkpoints",
+        "outcome": "killed"
+      }
+    ]
+  }
+}

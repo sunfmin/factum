@@ -1317,6 +1317,26 @@ pub async fn projection_rows_follow_the_log_and_rebuild_the_same<B: Backend>(b: 
     assert_eq!(again, before);
 }
 
+pub async fn one_tick_catches_a_projection_up_batch_by_batch<B: Backend>(b: &B) {
+    let w = World::new(b);
+    let e = w.engine_with_options(
+        Options {
+            batch: 1,
+            ..Options::default()
+        },
+        "a",
+    );
+    for total in [1, 2, 3] {
+        place(&e, total).await;
+    }
+    e.tick().await.unwrap();
+    assert_eq!(
+        e.rows("orders", "orders").await.unwrap().len(),
+        3,
+        "a catch-up reads on past its first batch"
+    );
+}
+
 pub async fn a_projection_skips_an_event_it_fails_on<B: Backend>(b: &B) {
     let w = World::with_orders(
         b,

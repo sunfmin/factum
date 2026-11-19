@@ -5,14 +5,13 @@ use factum_core::{
     ProcessState, Progress, Rejection, SCHEDULED, Step, StreamId, Uuid, Value, Version, WorkChange,
     WorkKind, codes, effects, fingerprint, start_key,
 };
-use factum_store::{
-    Answer, AnswerResult, Append, Batch, DeadLetter, Snapshot, Store, StoreError, Unit,
-};
+use factum_store::{Answer, AnswerResult, Append, Snapshot, Store, StoreError, Unit};
 use serde::Serialize;
 use serde_json::json;
 
 use crate::clock::Clock;
 use crate::model::Model;
+use crate::projector::Keeper;
 
 #[derive(Debug)]
 pub enum Error {
@@ -647,12 +646,12 @@ impl<S: Store> Engine<S> {
     pub async fn tick(&self) -> Result<Tick, Error> {
         let now = self.clock.now();
         let mut faults = Vec::new();
-        let mut done = self.dispatch(now, &mut faults).await?;
+        let mut done = self.follow(Keeper::Dispatch, now, &mut faults).await?;
         done += self.advance_due(now, &mut faults).await?;
         done += self.deliver(now, &mut faults).await?;
         done += self.run_due(now, &mut faults).await?;
         done += self.expire_waits(now, &mut faults).await?;
-        done += self.project().await?;
+        done += self.project(now).await?;
         Ok(Tick { done, faults })
     }
 
@@ -678,56 +677,6 @@ impl<S: Store> Engine<S> {
         Err(Error::Fault(format!(
             "settle: still busy after {SETTLE_TICKS} ticks"
         )))
-    }
-
-    async fn dispatch(&self, now: Instant, faults: &mut Vec<Fault>) -> Result<usize, Error> {
-        let mut at = self.make_current(DISPATCH, 1, &[]).await?;
-        let mut done = 0;
-        loop {
-            let events = self.store.read_log(at.position, self.options.batch).await?;
-            let Some(last) = events.last().map(|e| e.position) else {
-                return Ok(done);
-            };
-            let mut dead = Vec::new();
-            for e in events {
-                let (position, event, stream, version) =
-                    (e.position, e.id, e.stream.clone(), e.version);
-                match self.dispatch_event(e, now, faults).await {
-                    Ok(n) => done += n,
-                    Err(Error::Store(err)) => return Err(err.into()),
-                    Err(err) => {
-                        let error = err.to_string();
-                        faults.push(Fault {
-                            item: format!("event {event}"),
-                            error: error.clone(),
-                        });
-                        dead.push(DeadLetter {
-                            projection: DISPATCH.into(),
-                            position,
-                            event,
-                            stream,
-                            version,
-                            error,
-                        });
-                    }
-                }
-            }
-            let batch = Batch {
-                projection: DISPATCH.into(),
-                version: 1,
-                from: at.position,
-                to: last,
-                ops: Vec::new(),
-                dead,
-                resolved: Vec::new(),
-                stop: false,
-            };
-            match self.store.apply_projection(batch).await {
-                Ok(()) => at.position = last,
-                Err(StoreError::Stale(_)) => return Ok(done),
-                Err(e) => return Err(e.into()),
-            }
-        }
     }
 
     /// Starts the processes `e` starts and answers the waits for it. A wait
