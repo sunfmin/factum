@@ -13,9 +13,31 @@ use factum_store::{Batch, Checkpoint, DeadLetter, Store, StoreError};
 
 use crate::engine::{DISPATCH, Engine, Error, Races, rejected};
 
-/// What keeps a checkpoint: a projection, or dispatch (`None`), with the
-/// version and tables its checkpoint must carry to be current.
-type Keeper<'a> = (Option<&'a dyn Projection>, u32, Vec<Table>);
+/// What keeps a checkpoint and follows the log from it: dispatch, or a
+/// projection.
+#[derive(Clone, Copy)]
+pub(crate) enum Keeper<'a> {
+    Dispatch,
+    Projection(&'a dyn Projection),
+}
+
+impl Keeper<'_> {
+    /// The version its checkpoint must carry to be current.
+    fn version(&self) -> u32 {
+        match self {
+            Keeper::Dispatch => 1,
+            Keeper::Projection(p) => p.version(),
+        }
+    }
+
+    /// The tables its checkpoint must carry to be current.
+    fn tables(&self) -> Vec<Table> {
+        match self {
+            Keeper::Dispatch => Vec::new(),
+            Keeper::Projection(p) => p.tables(),
+        }
+    }
+}
 
 /// The identity a checkpoint must carry to be the running code's.
 fn schema(tables: &[Table]) -> Result<String, Error> {
@@ -35,10 +57,9 @@ impl<S: Store> Engine<S> {
     /// What keeps the checkpoint `name`.
     fn keeper(&self, name: &str) -> Result<Keeper<'_>, Error> {
         if name == DISPATCH {
-            return Ok((None, 1, Vec::new()));
+            return Ok(Keeper::Dispatch);
         }
-        let p = self.projection(name)?;
-        Ok((Some(p), p.version(), p.tables()))
+        Ok(Keeper::Projection(self.projection(name)?))
     }
 
     /// The checkpoint of `name` if it was built as `version` with `tables`;
@@ -225,8 +246,12 @@ impl<S: Store> Engine<S> {
     /// The events `projection` failed on; for [`DISPATCH`], the events the
     /// engine could not dispatch.
     pub async fn dead_letters(&self, projection: &str) -> Result<Vec<DeadLetter>, Error> {
-        let (_, version, tables) = self.keeper(projection)?;
-        if self.current(projection, version, &tables).await?.is_none() {
+        let k = self.keeper(projection)?;
+        if self
+            .current(projection, k.version(), &k.tables())
+            .await?
+            .is_none()
+        {
             return Ok(Vec::new());
         }
         Ok(self.store.dead_letters(projection).await?)
@@ -240,7 +265,8 @@ impl<S: Store> Engine<S> {
     /// For [`DISPATCH`], dispatches the event again: the processes it starts
     /// and the waits it answers.
     pub async fn retry_dead_letter(&self, projection: &str, event: Uuid) -> Result<bool, Error> {
-        let (p, version, tables) = self.keeper(projection)?;
+        let k = self.keeper(projection)?;
+        let (version, tables) = (k.version(), k.tables());
         let mut races = Races::new();
         loop {
             let Some(at) = self.current(projection, version, &tables).await? else {
@@ -267,12 +293,13 @@ impl<S: Store> Engine<S> {
                     dead.stream, dead.version
                 )));
             };
-            let ops = match p {
-                Some(p) => match self.project_one(p, &tables, e) {
+            let ops = match k {
+                Keeper::Projection(p) => match self.project_one(p, &tables, e) {
                     Ok(ops) => ops,
                     Err(_) => return Ok(false),
                 },
-                None => match self.dispatch_event(e, self.now(), &mut Vec::new()).await {
+                Keeper::Dispatch => match self.dispatch_event(e, self.now(), &mut Vec::new()).await
+                {
                     Ok(_) => Vec::new(),
                     Err(Error::Store(e)) => return Err(e.into()),
                     Err(_) => return Ok(false),
