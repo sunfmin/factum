@@ -12,7 +12,7 @@ use factum_store::{AnswerResult, Batch, StoreError, Unit};
 use serde_json::json;
 
 use crate::domain::{EXPIRES_MS, LIMIT, OrderList, PICKUP_MS, TALLY};
-use crate::flaky::{appends, records_step};
+use crate::flaky::{Call, appends, records_step};
 use crate::{Backend, World, ann, id, refused, sub};
 
 fn order(id: Uuid) -> StreamId {
@@ -1164,6 +1164,69 @@ pub async fn a_process_that_faults_stops_no_other<B: Backend>(b: &B) {
         Some("pack"),
         "tried again once its lease ran out"
     );
+}
+
+pub async fn a_store_error_ends_the_tick_and_a_fault_does_not<B: Backend>(b: &B) {
+    let mut made = Vec::new();
+    for call in Call::ALL {
+        let w = World::new(b);
+        // An item that faults: a charge whose row does not decode.
+        let (seed, p) = charge_stored_as(&w, json!({ "params": { "amount": 500 } })).await;
+        // Work every loop has: new events, a process to advance.
+        checkout(&seed, 100).await;
+        let (a, flaky) = w.flaky("b");
+        flaky.fail_on(call);
+        let tick = a.tick().await;
+        if !flaky.failed() {
+            tick.unwrap();
+            continue;
+        }
+        made.push(call);
+        match tick {
+            Err(Error::Store(e)) => assert_eq!(e, call.error(), "{call:?}"),
+            other => panic!("a failed {call:?} must end the tick, got {other:?}"),
+        }
+        w.advance(30_000);
+        let tick = a.tick().await.unwrap();
+        let charge = format!("action payment.charge {}", step_key(p, "charge"));
+        assert_eq!(
+            tick.faults.iter().map(|f| &f.item).collect::<Vec<_>>(),
+            vec![&charge],
+            "after a failed {call:?}, the fault is set aside and the tick goes on"
+        );
+    }
+    for call in [Call::ReadLog, Call::ReadStream, Call::Claim, Call::Answer] {
+        assert!(made.contains(&call), "a tick calls {call:?}");
+    }
+}
+
+pub async fn a_store_error_reaches_a_worker_as_it_is<B: Backend>(b: &B) {
+    let mut made = Vec::new();
+    for call in Call::ALL {
+        let w = World::new(b);
+        let (a, flaky) = w.flaky("a");
+        fulfilling(&a).await;
+        flaky.fail_on(call);
+        let worked: Result<(), Error> = async {
+            let task = a.claim_task("pack", "w1", 10_000).await?.expect("a pack");
+            a.heartbeat(&task, 10_000).await?;
+            a.dead_letters(factum::DISPATCH).await?;
+            a.finish_task(&task, Ok(json!({ "box": 1 })), "w1").await
+        }
+        .await;
+        if !flaky.failed() {
+            worked.unwrap();
+            continue;
+        }
+        made.push(call);
+        match worked {
+            Err(Error::Store(e)) => assert_eq!(e, call.error(), "{call:?}"),
+            other => panic!("a failed {call:?} must reach the worker, got {other:?}"),
+        }
+    }
+    for call in [Call::Claim, Call::Renew, Call::DeadLetters] {
+        assert!(made.contains(&call), "a worker calls {call:?}");
+    }
 }
 
 // ---- projections ----

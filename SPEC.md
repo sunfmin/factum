@@ -122,7 +122,8 @@ stand-in, receipts, packing, deliveries, pickups, an order list), and
 Scenarios run on a multi-threaded runtime; those about runners in parallel
 spawn them as tasks of their own. To make a runner die between two writes,
 or lose a race, a scenario wraps its store in `Flaky`: the next matching
-commit fails, or another runner (or projector) writes first. Time moves
+commit fails, the next call of a cued store method fails (a broken
+store), or another runner (or projector) writes first. Time moves
 only when a scenario moves it.
 
 Each scenario is held to account by mutation: breaking the rule it guards
