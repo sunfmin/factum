@@ -11,5 +11,15 @@
     }
   },
   "loosened": [],
-  "kept": []
+  "kept": [],
+  "kept_files": [
+    {
+      "suite": "rust",
+      "file": "crates/engine/src/engine.rs",
+      "prod_lines": 746,
+      "commits_90d": 9,
+      "commits_total": 9,
+      "reason": "Deep already: 8 public calls (submit, plan, state, history, start, process, tick, settle) hide idempotent replay, race retry (Races), snapshots, upcasting and dispatch; every event goes through the one private write(). Remaining smells are internal and small (process_state pass-through, record's 7 args), not worth a change at this churn."
+    }
+  ]
 }
