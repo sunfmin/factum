@@ -11,7 +11,14 @@
     }
   },
   "loosened": [],
-  "kept": [],
+  "kept": [
+    {
+      "suite": "rust",
+      "test": "factum-sqlite::conformance::runners_in_parallel_do_each_thing_once",
+      "hash": "3cd1625ae6f4e5b5",
+      "reason": "Guards races between concurrent runners: 20 processes ticked by 4 runners at once must each complete with one OrderPaid and exactly 20 calls/20 charges. a_step_run_but_not_recorded_is_replayed_not_repeated is a single crash-before-record replayed after a lease expires; no assertion there checks concurrent claiming, and folding the crash/lease setup into the parallel run would change what each checks and hide which behaviour failed."
+    }
+  ],
   "kept_files": [
     {
       "suite": "rust",
