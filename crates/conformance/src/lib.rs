@@ -175,6 +175,7 @@ macro_rules! suite {
             a_cancelled_task_ends_its_step_cancelled,
             a_wait_ends_when_its_event_arrives,
             a_wait_for_an_event_already_recorded_ends_at_once,
+            a_wait_for_an_event_recorded_while_it_is_requested_ends,
             a_wait_times_out,
             work_rows_in_the_stored_shape_still_run,
             a_work_row_that_does_not_decode_is_a_fault,

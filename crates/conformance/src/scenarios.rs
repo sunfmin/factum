@@ -1027,6 +1027,35 @@ pub async fn a_wait_for_an_event_already_recorded_ends_at_once<B: Backend>(b: &B
     ));
 }
 
+/// The event lands, and is dispatched, after the runner looked for it and
+/// before its wait row exists: the wait still ends.
+pub async fn a_wait_for_an_event_recorded_while_it_is_requested_ends<B: Backend>(b: &B) {
+    let w = World::new(b);
+    let (a, flaky) = w.flaky("a");
+    let other = w.engine("b");
+    let o = place(&a, 5).await;
+    pay(&a, o).await;
+    flaky.race_on(
+        |u| appends(u, "StepRequested"),
+        Box::pin(async move {
+            other
+                .submit(sub("order.close", json!({ "order": o })))
+                .await
+                .unwrap();
+            other.settle().await.unwrap();
+        }),
+    );
+    let p = id();
+    a.start("pickup", p, json!({ "order": o }), ann())
+        .await
+        .unwrap();
+    a.settle().await.unwrap();
+    assert!(matches!(
+        finished(&a, p).await,
+        Some(Finished::Completed(_))
+    ));
+}
+
 pub async fn a_wait_times_out<B: Backend>(b: &B) {
     let w = World::new(b);
     let e = w.engine("a");
