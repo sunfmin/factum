@@ -22,7 +22,7 @@ pub use work::ClaimedTask;
 
 pub use factum_core::{
     ActionPolicy, Aggregate, By, Command, Decision, Event, Finished, Instant, NewEvent, Next,
-    OnFailure, Op, Outcome, Process, Progress, Projection, Query, Recurring, Rejection,
+    OnFailure, Op, Outcome, Process, Progress, Projection, Query, Recorded, Recurring, Rejection,
     RetryPolicy, RowOp, Sample, StartsOn, Step, StreamId, Table, TaskType, Upcast, Uuid, Value,
     Version, codes,
 };

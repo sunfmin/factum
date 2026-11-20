@@ -7,7 +7,6 @@ use factum_core::{
 };
 use factum_store::{Answer, AnswerResult, Append, Snapshot, Store, StoreError, Unit};
 use serde::Serialize;
-use serde_json::json;
 
 use crate::clock::Clock;
 use crate::model::Model;
@@ -694,8 +693,7 @@ impl<S: Store> Engine<S> {
                 continue;
             };
             if on.aggregate == e.stream.aggregate && on.event == e.kind {
-                let input =
-                    json!({ "id": e.id, "stream": e.stream, "type": e.kind, "data": e.data });
+                let input = crate::work::event_json(&e);
                 match self
                     .start_at(name, start_key(e.id, name), input, e.meta.by.clone(), now)
                     .await

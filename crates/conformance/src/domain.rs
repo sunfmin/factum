@@ -7,8 +7,8 @@ use std::sync::atomic::{AtomicU32, Ordering};
 
 use factum::{
     ActionAnswer, ActionPolicy, Aggregate, By, Command, Decision, Event, Instant, Model, Next,
-    OnFailure, Outcome, Process, Progress, Projection, Recurring, Rejection, RetryPolicy, RowOp,
-    StartsOn, StreamId, Table, TaskType, Upcast, Uuid, Value,
+    OnFailure, Outcome, Process, Progress, Projection, Recorded, Recurring, Rejection, RetryPolicy,
+    RowOp, StartsOn, StreamId, Table, TaskType, Upcast, Uuid, Value,
 };
 use serde::{Deserialize, Serialize};
 use serde_json::json;
@@ -466,16 +466,6 @@ impl Process for ReceiptProcess {
     }
 }
 
-/// The recorded event a process that starts on one is given.
-#[derive(Serialize, Deserialize)]
-pub struct Recorded {
-    pub id: Uuid,
-    pub stream: StreamId,
-    #[serde(rename = "type")]
-    pub kind: String,
-    pub data: Value,
-}
-
 pub struct FulfilProcess;
 
 impl Process for FulfilProcess {
@@ -583,7 +573,10 @@ impl Process for PickupProcess {
                 "OrderClosed",
                 PICKUP_MS,
             ),
-            Some(Outcome::Ok(e)) => Next::complete(e["id"].clone()),
+            Some(Outcome::Ok(e)) => match serde_json::from_value::<Recorded>(e.clone()) {
+                Ok(e) => Next::complete(json!(e.id)),
+                Err(err) => Next::stuck(err.to_string()),
+            },
             Some(Outcome::TimedOut) => Next::fail("not picked up"),
             Some(other) => Next::stuck(format!("{other:?}")),
         }

@@ -11,7 +11,7 @@ mod query;
 mod work;
 
 pub use event::{
-    By, Event, Instant, Meta, NewEvent, Position, Rejection, StreamId, Version, codes,
+    By, Event, Instant, Meta, NewEvent, Position, Recorded, Rejection, StreamId, Version, codes,
 };
 pub use keys::{fingerprint, recurring_key, result_key, schedule_key, start_key, step_key};
 pub use model::{
