@@ -137,6 +137,28 @@ pub struct Event {
     pub position: Position,
 }
 
+/// An event as a process sees it: the input of a process that starts on
+/// it, and the outcome of a `Run` (one per event) or an `Await` step.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct Recorded {
+    pub id: Uuid,
+    pub stream: StreamId,
+    #[serde(rename = "type")]
+    pub kind: String,
+    pub data: Value,
+}
+
+impl From<&Event> for Recorded {
+    fn from(e: &Event) -> Recorded {
+        Recorded {
+            id: e.id,
+            stream: e.stream.clone(),
+            kind: e.kind.clone(),
+            data: e.data.clone(),
+        }
+    }
+}
+
 /// A command's "no": a code a caller can act on and a sentence for people.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Rejection {

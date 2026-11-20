@@ -100,7 +100,7 @@ pub trait Command: Send + Sync + 'static {
 
 /// Where a process starts by itself: on every event of this type recorded
 /// on a stream of this aggregate. Its input is that event as
-/// `{"id", "stream", "type", "data"}`.
+/// [`Recorded`](crate::Recorded).
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct StartsOn {
     pub aggregate: String,
