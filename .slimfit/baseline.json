@@ -27,6 +27,14 @@
       "commits_90d": 9,
       "commits_total": 9,
       "reason": "Deep already: 8 public calls (submit, plan, state, history, start, process, tick, settle) hide idempotent replay, race retry (Races), snapshots, upcasting and dispatch; every event goes through the one private write(). Remaining smells are internal and small (process_state pass-through, record's 7 args), not worth a change at this churn."
+    },
+    {
+      "suite": "rust",
+      "file": "crates/sqlite/src/lib.rs",
+      "prod_lines": 813,
+      "commits_90d": 9,
+      "commits_total": 9,
+      "reason": "Already deep: its interface is open/path plus the Store trait (SPEC §3), a real seam with two adapters (memory, sqlite). The rules every store shares (claim_row, wake_row, release_row, check_unit, check_batch) already moved to factum-store in factum#14/#15; what remains is SQL only (schema steps, row codecs, generated projection tables, claim query), the knowledge this adapter exists to hide. Tests cross only the engine API, plus the SPEC-sanctioned file-format test. Splitting the file would move lines, not add depth."
     }
   ]
 }
