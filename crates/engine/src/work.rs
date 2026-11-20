@@ -2,8 +2,8 @@
 //! actions, handing tasks to workers, running schedules and waits.
 
 use factum_core::{
-    Advance, By, Event, Instant, Meta, NewEvent, Outcome, PROCESS, ProcessEvent, SCHEDULE_RAN,
-    Step, StreamId, Uuid, Value, Version, Work, WorkChange, WorkKind, advance, codes,
+    Advance, By, Event, Instant, Meta, NewEvent, Outcome, PROCESS, ProcessEvent, Recorded,
+    SCHEDULE_RAN, Step, StreamId, Uuid, Value, Version, Work, WorkChange, WorkKind, advance, codes,
     recurring_key, schedule_key, schedule_stream, step_key,
 };
 use factum_store::{Claim, Store, StoreError, Unit};
@@ -26,8 +26,9 @@ pub struct ClaimedTask {
     pub step: Option<String>,
 }
 
-fn event_json(e: &Event) -> Value {
-    json!({ "id": e.id, "stream": e.stream, "type": e.kind, "data": e.data })
+/// `e` as a process is given it.
+pub(crate) fn event_json(e: &Event) -> Value {
+    serde_json::to_value(Recorded::from(e)).unwrap_or(Value::Null)
 }
 
 impl<S: Store> Engine<S> {

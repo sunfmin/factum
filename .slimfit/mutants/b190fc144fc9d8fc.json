@@ -1,0 +1,15 @@
+{
+  "tree": "319154224dcedb65bdec145ef5fa00b5f5e8b26f+d1fba762150c532c",
+  "picker": "codex:01a1f7f4-38e0-7133-8503-17e4d5a5dc51:default",
+  "author": "claude-code:346a2f80-8487-546c-ad8c-eb9a6929bc3a:opus",
+  "picks": {
+    "rust": [
+      {
+        "name": "crates/engine/src/engine.rs:695:51: replace && with || in Engine<S>::dispatch_event",
+        "why": "A test that exercises only the intended trigger can miss a process starting when just the aggregate or just the event type matches.",
+        "outcome": "killed",
+        "first_outcome": "killed"
+      }
+    ]
+  }
+}
