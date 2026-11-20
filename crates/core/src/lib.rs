@@ -15,9 +15,9 @@ pub use event::{
 };
 pub use keys::{fingerprint, recurring_key, result_key, schedule_key, start_key, step_key};
 pub use model::{
-    ActionPolicy, Aggregate, Command, Decision, DynAggregate, DynCommand, DynProcess, OnFailure,
-    Process, Projection, Recurring, RetryPolicy, RowOp, Scheduled, StartsOn, TaskType, Upcast,
-    aggregate_of, command_of, process_of,
+    ActionPolicy, Aggregate, Attempt, Command, Decision, DynAggregate, DynCommand, DynProcess,
+    OnFailure, Process, Projection, Recurring, RetryPolicy, RowOp, Scheduled, StartsOn, TaskType,
+    Upcast, aggregate_of, command_of, process_of,
 };
 pub use process::{
     Advance, Finished, Next, Outcome, PROCESS, ProcessEvent, ProcessState, Progress, Sample, Step,

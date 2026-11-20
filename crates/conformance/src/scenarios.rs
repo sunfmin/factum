@@ -528,6 +528,39 @@ pub async fn an_at_most_once_call_whose_answer_was_lost_ends_unknown<B: Backend>
     assert_eq!(w.printer.printed.load(Ordering::SeqCst), 1);
 }
 
+pub async fn a_call_whose_lease_runs_out_on_every_attempt_ends_failed<B: Backend>(b: &B) {
+    let w = World::new(b);
+    let (a, flaky) = w.flaky("a");
+    // Every answer of the charge is lost, as when each call outlives the
+    // action's timeout; only its end without a call is recorded.
+    flaky.lose_every(|u| {
+        u.appends
+            .iter()
+            .flat_map(|a| &a.events)
+            .any(|e| e.data["key"] == "charge" && e.data["outcome"].get("ok").is_some())
+    });
+    let (o, p) = checkout(&a, 500).await;
+    for attempt in 1..=3 {
+        assert!(a.settle().await.is_err());
+        assert_eq!(w.payments.calls(), attempt);
+        w.advance(30_000);
+    }
+    a.settle().await.unwrap();
+    assert_eq!(
+        w.payments.calls(),
+        3,
+        "a call taken over after its declared attempts is not made again"
+    );
+    assert_eq!(
+        a.process(p).await.unwrap().progress.outcome("charge"),
+        Some(&Outcome::Failed(
+            "its lease ran out on every attempt".into()
+        ))
+    );
+    assert!(matches!(finished(&a, p).await, Some(Finished::Failed(_))));
+    assert_eq!(status(&a, o).await, "placed");
+}
+
 pub async fn a_call_that_fails_for_now_is_tried_again_then_given_up<B: Backend>(b: &B) {
     let w = World::new(b);
     let e = w.engine("a");

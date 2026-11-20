@@ -1,0 +1,15 @@
+{
+  "tree": "a26a98ea82c8d687eafb00e44a003939c90cffcc+d1fba762150c532c",
+  "picker": "codex:01a1f7f6-480f-7912-9667-ef2a8d5a41ef:default",
+  "author": "claude-code:8a9f07f7-f81a-57d3-8e6e-4ec9c95b2b4a:opus",
+  "picks": {
+    "rust": [
+      {
+        "name": "crates/engine/src/work.rs:604:61: delete ! in Engine<S>::finish_task",
+        "why": "A lease lost during the commit would be silently accepted for a terminal task result and reported for a retry, and the visible retry race scenario concerns actions.",
+        "outcome": "killed",
+        "first_outcome": "killed"
+      }
+    ]
+  }
+}
