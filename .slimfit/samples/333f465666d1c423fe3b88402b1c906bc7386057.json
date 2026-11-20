@@ -1,0 +1,29 @@
+{
+  "tip": "333f465666d1c423fe3b88402b1c906bc7386057",
+  "from": "4b825dc642cb6eb9a060e54bf8d69288fbee4904",
+  "pool": 620,
+  "drawn": {
+    "rust": [
+      {
+        "name": "crates/core/src/query.rs:149:9: replace Scalar::rank -> u8 with 1",
+        "outcome": "killed"
+      },
+      {
+        "name": "crates/engine/src/engine.rs:666:26: replace == with != in Engine<S>::settle",
+        "outcome": "killed"
+      },
+      {
+        "name": "crates/store/src/memory.rs:151:9: replace <impl Store for MemoryStore>::read_stream -> Result<Vec<Event>> with Ok(vec![])",
+        "outcome": "killed"
+      },
+      {
+        "name": "crates/engine/src/projector.rs:303:9: replace Engine<S>::query -> Result<Vec<(String, Value)>, Error> with Ok(vec![(String::new(), Default::default())])",
+        "outcome": "killed"
+      },
+      {
+        "name": "crates/core/src/work.rs:217:19: replace == with != in effects",
+        "outcome": "killed"
+      }
+    ]
+  }
+}
