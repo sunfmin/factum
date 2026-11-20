@@ -1,24 +1,17 @@
 {
   "suites": {
     "rust": {
-      "prod_lines": 4475,
-      "test_lines": 3118,
-      "tests": 129,
+      "prod_lines": 4477,
+      "test_lines": 3151,
+      "tests": 131,
       "failures": 0,
       "test_seconds": 2.64,
-      "covered_lines": 2876,
-      "uncovered_lines": 154
+      "covered_lines": 2880,
+      "uncovered_lines": 146
     }
   },
   "loosened": [],
-  "kept": [
-    {
-      "suite": "rust",
-      "test": "factum-sqlite::conformance::runners_in_parallel_do_each_thing_once",
-      "hash": "3cd1625ae6f4e5b5",
-      "reason": "Guards races between concurrent runners: 20 processes ticked by 4 runners at once must each complete with one OrderPaid and exactly 20 calls/20 charges. a_step_run_but_not_recorded_is_replayed_not_repeated is a single crash-before-record replayed after a lease expires; no assertion there checks concurrent claiming, and folding the crash/lease setup into the parallel run would change what each checks and hide which behaviour failed."
-    }
-  ],
+  "kept": [],
   "kept_files": [
     {
       "suite": "rust",
@@ -36,5 +29,11 @@
       "commits_total": 9,
       "reason": "Already deep: its interface is open/path plus the Store trait (SPEC §3), a real seam with two adapters (memory, sqlite). The rules every store shares (claim_row, wake_row, release_row, check_unit, check_batch) already moved to factum-store in factum#14/#15; what remains is SQL only (schema steps, row codecs, generated projection tables, claim query), the knowledge this adapter exists to hide. Tests cross only the engine API, plus the SPEC-sanctioned file-format test. Splitting the file would move lines, not add depth."
     }
-  ]
+  ],
+  "measured": {
+    "rust": {
+      "uncovered_lines": 146,
+      "test_seconds": 3.714
+    }
+  }
 }
