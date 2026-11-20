@@ -10,8 +10,8 @@ use serde_json::{Value, json};
 use uuid::Uuid;
 
 use crate::event::{By, Event, Instant, NewEvent, Rejection, codes};
-use crate::process::{Finished, Next, Progress};
-use crate::work::SCHEDULED;
+use crate::process::{Finished, Next, Outcome, Progress};
+use crate::work::{SCHEDULED, Work};
 
 /// Rewrites one recorded shape of an event's data into the next.
 pub type Upcast = fn(Value) -> Value;
@@ -165,6 +165,45 @@ impl RetryPolicy {
         let offset = (seed % (2 * spread as u128 + 1)) as i64 - spread;
         (wait + offset).max(0)
     }
+
+    /// On a claim of an action's or a task's row: whether this attempt
+    /// runs, or the step ends without it. A row taken over from a lease
+    /// that ran out ends `Unknown` when done at most once, and `Failed`
+    /// once its attempts are spent.
+    pub fn on_claim(&self, row: &Work, at_most_once: bool) -> Attempt {
+        if !row.taken_over {
+            Attempt::Run
+        } else if at_most_once {
+            Attempt::End(Outcome::Unknown)
+        } else if row.attempts > self.attempts {
+            Attempt::End(Outcome::Failed("its lease ran out on every attempt".into()))
+        } else {
+            Attempt::Run
+        }
+    }
+
+    /// After an attempt failed for now: when the row is due again, or the
+    /// step's end once its attempts are spent.
+    pub fn after_failure(
+        &self,
+        row: &Work,
+        now: Instant,
+        error: String,
+    ) -> Result<Instant, Outcome> {
+        if row.attempts >= self.attempts {
+            Err(Outcome::Failed(error))
+        } else {
+            Ok(now.plus(self.delay(row.attempts, row.id)))
+        }
+    }
+}
+
+/// What a claimed action or task comes to before it runs.
+#[derive(Clone, Debug, PartialEq)]
+pub enum Attempt {
+    Run,
+    /// Ended without running.
+    End(Outcome),
 }
 
 /// How an action is called.

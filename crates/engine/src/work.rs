@@ -2,8 +2,8 @@
 //! actions, handing tasks to workers, running schedules and waits.
 
 use factum_core::{
-    Advance, By, Event, Instant, Meta, NewEvent, Outcome, PROCESS, ProcessEvent, SCHEDULE_RAN,
-    Step, StreamId, Uuid, Value, Version, Work, WorkChange, WorkKind, advance, codes,
+    Advance, Attempt, By, Event, Instant, Meta, NewEvent, Outcome, PROCESS, ProcessEvent,
+    SCHEDULE_RAN, Step, StreamId, Uuid, Value, Version, Work, WorkChange, WorkKind, advance, codes,
     recurring_key, schedule_key, schedule_stream, step_key,
 };
 use factum_store::{Claim, Store, StoreError, Unit};
@@ -267,20 +267,58 @@ impl<S: Store> Engine<S> {
         }
     }
 
-    async fn answer_row(
+    /// Ends an attempt on a row: lets it go, due again at `Ok(due)`, or
+    /// answers its step with `Err(outcome)` and, in the same commit, paces
+    /// a task's ordering key: no next task of the key runs before its
+    /// interval. Under the row's lease, if it has one. Whether it held.
+    async fn end_attempt(
         &self,
         row: &Work,
-        outcome: Outcome,
+        end: Result<Instant, Outcome>,
         by: &By,
         now: Instant,
-        work: &[WorkChange],
     ) -> Result<bool, Error> {
+        let outcome = match end {
+            Ok(due) => return self.release(row, due).await,
+            Err(outcome) => outcome,
+        };
         let (Some(process), Some(step)) = (row.process, row.step.as_deref()) else {
             return Ok(false);
         };
+        let mut pace = Vec::new();
+        if let Some(key) = &row.ordering_key
+            && let Some(tt) = self.model.tasks.get(&row.name)
+            && tt.key_interval_ms > 0
+        {
+            pace.push(WorkChange::Pace {
+                name: row.name.clone(),
+                key: key.clone(),
+                not_before: now.plus(tt.key_interval_ms),
+            });
+        }
         let guard = row.lease.map(|l| (row.kind, l));
-        self.answer_step(process, step, outcome, by, now, guard, work)
+        self.answer_step(process, step, outcome, by, now, guard, &pace)
             .await
+    }
+
+    async fn release(&self, row: &Work, due: Instant) -> Result<bool, Error> {
+        let Some(lease) = row.lease else {
+            return Ok(false);
+        };
+        let unit = Unit {
+            work: vec![WorkChange::Release {
+                kind: row.kind,
+                id: row.id,
+                lease,
+                due,
+            }],
+            ..Unit::default()
+        };
+        match self.store.commit(unit).await {
+            Ok(_) => Ok(true),
+            Err(StoreError::LeaseLost) => Ok(false),
+            Err(e) => Err(e.into()),
+        }
     }
 
     /// Answers the waits for the event that just arrived.
@@ -347,7 +385,7 @@ impl<S: Store> Engine<S> {
             None => Outcome::TimedOut,
         };
         let by = By::Process(StreamId::new(PROCESS, wait.process));
-        self.answer_row(row, outcome, &by, now, &[]).await?;
+        self.end_attempt(row, Err(outcome), &by, now).await?;
         Ok(())
     }
 
@@ -386,44 +424,18 @@ impl<S: Store> Engine<S> {
     ) -> Result<(), Error> {
         let by = By::Action(name.to_string());
         let call = row.call().map_err(Error::Fault)?;
-        if row.taken_over && call.at_most_once {
-            self.answer_row(row, Outcome::Unknown, &by, now, &[])
-                .await?;
-            return Ok(());
-        }
-        let outcome = match (def.call)(row.id, call.params).await {
-            ActionAnswer::Done(v) => Outcome::Ok(v),
-            ActionAnswer::Rejected(r) => Outcome::Rejected(r),
-            ActionAnswer::Permanent(e) => Outcome::Failed(e),
-            ActionAnswer::Passing(e) if row.attempts >= def.policy.retry.attempts => {
-                Outcome::Failed(e)
-            }
-            ActionAnswer::Passing(_) => {
-                let due = now.plus(def.policy.retry.delay(row.attempts, row.id));
-                return self.release(row, due).await;
-            }
+        let retry = &def.policy.retry;
+        let end = match retry.on_claim(row, call.at_most_once) {
+            Attempt::End(outcome) => Err(outcome),
+            Attempt::Run => match (def.call)(row.id, call.params).await {
+                ActionAnswer::Done(v) => Err(Outcome::Ok(v)),
+                ActionAnswer::Rejected(r) => Err(Outcome::Rejected(r)),
+                ActionAnswer::Permanent(e) => Err(Outcome::Failed(e)),
+                ActionAnswer::Passing(e) => retry.after_failure(row, now, e),
+            },
         };
-        self.answer_row(row, outcome, &by, now, &[]).await?;
+        self.end_attempt(row, end, &by, now).await?;
         Ok(())
-    }
-
-    async fn release(&self, row: &Work, due: Instant) -> Result<(), Error> {
-        let Some(lease) = row.lease else {
-            return Ok(());
-        };
-        let unit = Unit {
-            work: vec![WorkChange::Release {
-                kind: row.kind,
-                id: row.id,
-                lease,
-                due,
-            }],
-            ..Unit::default()
-        };
-        match self.store.commit(unit).await {
-            Ok(_) | Err(StoreError::LeaseLost) => Ok(()),
-            Err(e) => Err(e.into()),
-        }
     }
 
     // ---- schedules and recurring commands ----
@@ -534,19 +546,9 @@ impl<S: Store> Engine<S> {
             let Some(row) = self.store.claim(claim).await?.into_iter().next() else {
                 return Ok(None);
             };
-            let by = By::Worker(worker.to_string());
-            if row.taken_over && tt.at_most_once {
-                self.finish_row(&row, Outcome::Unknown, &by, now).await?;
-                continue;
-            }
-            if row.taken_over && row.attempts > tt.retry.attempts {
-                self.finish_row(
-                    &row,
-                    Outcome::Failed("its lease ran out on every attempt".into()),
-                    &by,
-                    now,
-                )
-                .await?;
+            if let Attempt::End(outcome) = tt.retry.on_claim(&row, tt.at_most_once) {
+                let by = By::Worker(worker.to_string());
+                self.end_attempt(&row, Err(outcome), &by, now).await?;
                 continue;
             }
             let input = row.input().map_err(Error::Fault)?.clone();
@@ -594,16 +596,12 @@ impl<S: Store> Engine<S> {
         let now = self.clock.now();
         let row = self.held(task).await?;
         let by = By::Worker(worker.to_string());
-        let outcome = match result {
-            Ok(v) => Outcome::Ok(v),
-            Err(e) if row.attempts >= tt.retry.attempts => Outcome::Failed(e),
-            Err(_) => {
-                return self
-                    .release(&row, now.plus(tt.retry.delay(row.attempts, row.id)))
-                    .await;
-            }
+        let end = match result {
+            Ok(v) => Err(Outcome::Ok(v)),
+            Err(e) => tt.retry.after_failure(&row, now, e),
         };
-        if !self.finish_row(&row, outcome, &by, now).await? {
+        let retried = end.is_ok();
+        if !self.end_attempt(&row, end, &by, now).await? && !retried {
             return Err(rejected(codes::LEASE_LOST, "the task's lease ran out"));
         }
         Ok(())
@@ -616,31 +614,9 @@ impl<S: Store> Engine<S> {
             return Err(rejected(codes::UNKNOWN, format!("no task {id} pending")));
         };
         row.lease = None;
-        self.finish_row(&row, Outcome::Cancelled, &by, now).await?;
+        self.end_attempt(&row, Err(Outcome::Cancelled), &by, now)
+            .await?;
         Ok(())
-    }
-
-    /// Answers a task's step and, in the same commit, paces its ordering
-    /// key: no next task of the key runs before its interval.
-    async fn finish_row(
-        &self,
-        row: &Work,
-        outcome: Outcome,
-        by: &By,
-        now: Instant,
-    ) -> Result<bool, Error> {
-        let mut pace = Vec::new();
-        if let Some(key) = &row.ordering_key
-            && let Some(tt) = self.model.tasks.get(&row.name)
-            && tt.key_interval_ms > 0
-        {
-            pace.push(WorkChange::Pace {
-                name: row.name.clone(),
-                key: key.clone(),
-                not_before: now.plus(tt.key_interval_ms),
-            });
-        }
-        self.answer_row(row, outcome, by, now, &pace).await
     }
 
     async fn held(&self, task: &ClaimedTask) -> Result<Work, Error> {
