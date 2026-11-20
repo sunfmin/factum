@@ -572,6 +572,11 @@ pub async fn a_call_that_fails_for_now_is_tried_again_then_given_up<B: Backend>(
     e.settle().await.unwrap();
     assert_eq!(w.payments.calls(), 1, "the first retry waits a second");
     w.advance(1);
+    assert_eq!(
+        e.tick().await.unwrap().done,
+        1,
+        "a tick that only tries the call again counts that call"
+    );
     e.settle().await.unwrap();
     assert_eq!(w.payments.calls(), 2);
     w.advance(2_000);

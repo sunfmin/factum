@@ -1,0 +1,33 @@
+{
+  "tree": "08d37aadad62e4580d84d2aa20f92419b653acdd+d1fba762150c532c",
+  "picker": "codex:01a1f80e-5731-7a80-b687-a11b50baf551:default",
+  "author": "claude-code:f22ffc0e-6171-5736-a5d5-479cd362d904:opus",
+  "picks": {
+    "rust": [
+      {
+        "name": "crates/engine/src/work.rs:426:19: replace += with *= in Engine<S>::deliver",
+        "why": "Actions still run, but the delivered count stays at zero, so tests that check only action effects can pass.",
+        "outcome": "killed",
+        "first_outcome": "survived"
+      },
+      {
+        "name": "crates/engine/src/work.rs:31:5: replace item -> String with String::new()",
+        "why": "Faults are still collected and the batch continues, so only an assertion on the fault's item label catches this.",
+        "outcome": "killed",
+        "first_outcome": "killed"
+      },
+      {
+        "name": "crates/engine/src/work.rs:393:9: replace Engine<S>::expire_waits -> Result<usize, Error> with Ok(0)",
+        "why": "Expiration is silently skipped, which event-driven wait tests can miss unless they tick past a deadline without a matching event.",
+        "outcome": "killed",
+        "first_outcome": "killed"
+      },
+      {
+        "name": "crates/engine/src/work.rs:357:9: replace Engine<S>::arrived -> Result<usize, Error> with Ok(0)",
+        "why": "Ordinary event dispatch can still succeed while an existing wait never resumes when its matching event arrives.",
+        "outcome": "killed",
+        "first_outcome": "killed"
+      }
+    ]
+  }
+}
