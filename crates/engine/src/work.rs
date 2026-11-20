@@ -288,8 +288,8 @@ impl<S: Store> Engine<S> {
         let mut pace = Vec::new();
         if let Some(key) = &row.ordering_key
             && let Some(tt) = self.model.tasks.get(&row.name)
-            && tt.key_interval_ms > 0
         {
+            // An interval of 0 paces nothing: the key is due at `now`.
             pace.push(WorkChange::Pace {
                 name: row.name.clone(),
                 key: key.clone(),
