@@ -26,6 +26,17 @@ pub struct ClaimedTask {
     pub step: Option<String>,
 }
 
+/// The `Fault::item` a tick names a faulted work row by.
+fn item(row: &Work) -> String {
+    match row.kind {
+        WorkKind::Advance => format!("{PROCESS}/{}", row.id),
+        WorkKind::Action => format!("action {} {}", row.name, row.id),
+        WorkKind::Task => format!("task {} {}", row.name, row.id),
+        WorkKind::Schedule => format!("schedule {}", row.id),
+        WorkKind::Await => format!("wait {}", row.id),
+    }
+}
+
 /// `e` as a process is given it.
 pub(crate) fn event_json(e: &Event) -> Value {
     serde_json::to_value(Recorded::from(e)).unwrap_or(Value::Null)
@@ -49,6 +60,28 @@ impl<S: Store> Engine<S> {
         }
     }
 
+    /// Claims the rows `claim` names and runs each; a row whose run faults
+    /// is set aside and the rest go on, a store error ends the loop. How
+    /// many ran.
+    async fn drain<Fut>(
+        &self,
+        claim: Claim,
+        faults: &mut Vec<Fault>,
+        run: impl Fn(Work) -> Fut,
+    ) -> Result<usize, Error>
+    where
+        Fut: Future<Output = Result<(), Error>>,
+    {
+        let mut count = 0;
+        for row in self.store.claim(claim).await? {
+            let label = item(&row);
+            if set_aside(run(row).await, || label, faults)?.is_some() {
+                count += 1;
+            }
+        }
+        Ok(count)
+    }
+
     // ---- processes ----
 
     pub(crate) async fn advance_due(
@@ -56,24 +89,16 @@ impl<S: Store> Engine<S> {
         now: Instant,
         faults: &mut Vec<Fault>,
     ) -> Result<usize, Error> {
-        let rows = self
-            .store
-            .claim(self.claim(WorkKind::Advance, None, now, self.options.advance_lease_ms))
-            .await?;
-        let mut count = 0;
-        for row in rows {
-            let id = row.id;
-            let advanced = self.advance_one(row, now).await;
-            if set_aside(advanced, || format!("{PROCESS}/{id}"), faults)?.is_some() {
-                count += 1;
-            }
-        }
-        Ok(count)
+        let claim = self.claim(WorkKind::Advance, None, now, self.options.advance_lease_ms);
+        self.drain(claim, faults, move |row| async move {
+            self.advance_one(&row, now).await
+        })
+        .await
     }
 
     /// Moves one process on as far as it goes without waiting, under the
     /// lease of its row.
-    async fn advance_one(&self, row: Work, now: Instant) -> Result<(), Error> {
+    async fn advance_one(&self, row: &Work, now: Instant) -> Result<(), Error> {
         let id = row.id;
         let lease = row.lease.expect("a claimed row has a lease");
         let guard = vec![(WorkKind::Advance, id, lease)];
@@ -335,8 +360,8 @@ impl<S: Store> Engine<S> {
             .work_named(WorkKind::Await, &e.stream.to_string())
             .await?
         {
-            let item = || format!("wait {}", row.id);
-            let Some(wait) = set_aside(row.wait().map_err(Error::Fault), item, faults)? else {
+            let Some(wait) = set_aside(row.wait().map_err(Error::Fault), || item(&row), faults)?
+            else {
                 continue;
             };
             if wait.event == e.kind {
@@ -365,18 +390,11 @@ impl<S: Store> Engine<S> {
         now: Instant,
         faults: &mut Vec<Fault>,
     ) -> Result<usize, Error> {
-        let rows = self
-            .store
-            .claim(self.claim(WorkKind::Await, None, now, self.options.schedule_lease_ms))
-            .await?;
-        let mut count = 0;
-        for row in rows {
-            let ended = self.expire_wait(&row, now).await;
-            if set_aside(ended, || format!("wait {}", row.id), faults)?.is_some() {
-                count += 1;
-            }
-        }
-        Ok(count)
+        let claim = self.claim(WorkKind::Await, None, now, self.options.schedule_lease_ms);
+        self.drain(claim, faults, move |row| async move {
+            self.expire_wait(&row, now).await
+        })
+        .await
     }
 
     async fn expire_wait(&self, row: &Work, now: Instant) -> Result<(), Error> {
@@ -405,13 +423,11 @@ impl<S: Store> Engine<S> {
                 now,
                 def.policy.timeout_ms,
             );
-            for row in self.store.claim(claim).await? {
-                let delivered = self.deliver_one(name, def, &row, now).await;
-                let item = || format!("action {name} {}", row.id);
-                if set_aside(delivered, item, faults)?.is_some() {
-                    count += 1;
-                }
-            }
+            count += self
+                .drain(claim, faults, move |row| async move {
+                    self.deliver_one(name, def, &row, now).await
+                })
+                .await?;
         }
         Ok(count)
     }
@@ -446,22 +462,17 @@ impl<S: Store> Engine<S> {
         now: Instant,
         faults: &mut Vec<Fault>,
     ) -> Result<usize, Error> {
-        let rows = self
-            .store
-            .claim(self.claim(
-                WorkKind::Schedule,
-                None,
-                now,
-                self.options.schedule_lease_ms,
-            ))
+        let claim = self.claim(
+            WorkKind::Schedule,
+            None,
+            now,
+            self.options.schedule_lease_ms,
+        );
+        let mut count = self
+            .drain(claim, faults, move |row| async move {
+                self.run_scheduled(&row, now).await
+            })
             .await?;
-        let mut count = 0;
-        for row in rows {
-            let ran = self.run_scheduled(&row, now).await;
-            if set_aside(ran, || format!("schedule {}", row.id), faults)?.is_some() {
-                count += 1;
-            }
-        }
         for r in &self.model.recurring {
             let start = r.period_start(now);
             let key = recurring_key(&r.name, start);
