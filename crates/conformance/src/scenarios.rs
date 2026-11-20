@@ -1928,8 +1928,11 @@ pub async fn runners_in_parallel_do_each_thing_once<B: Backend>(b: &B) {
     for n in 0..4 {
         let e = std::sync::Arc::new(w.engine(&format!("r{n}")));
         handles.push(tokio::spawn(async move {
+            // Until a tick finds nothing: every runner races for the same work.
             for _ in 0..50 {
-                e.tick().await.unwrap();
+                if e.tick().await.unwrap().done == 0 {
+                    break;
+                }
                 tokio::task::yield_now().await;
             }
         }));
