@@ -177,19 +177,19 @@ impl RetryPolicy {
     /// its attempts are spent: the attempt whose lease ran out may have
     /// done the work, so its outcome is not known, only that no answer came.
     pub fn on_claim(&self, row: &Work, at_most_once: bool) -> Attempt {
-        let tried = row.attempts.saturating_sub(1);
-        if row.taken_over && at_most_once {
-            Attempt::End(Outcome::Unknown(format!(
-                "its lease ran out on attempt {tried}; done at most once, it is not tried again"
-            )))
-        } else if row.taken_over && row.attempts > self.attempts {
-            Attempt::End(Outcome::Unknown(format!(
-                "its lease ran out on attempt {tried} of {}, the last",
-                self.attempts
-            )))
+        let why = if !row.taken_over {
+            return Attempt::Run;
+        } else if at_most_once {
+            "; done at most once, it is not tried again".to_string()
+        } else if row.attempts > self.attempts {
+            format!(" of {}, the last", self.attempts)
         } else {
-            Attempt::Run
-        }
+            return Attempt::Run;
+        };
+        let tried = row.attempts.saturating_sub(1);
+        Attempt::End(Outcome::Unknown(format!(
+            "its lease ran out on attempt {tried}{why}"
+        )))
     }
 
     /// After an attempt failed for now: when the row is due again, or, once

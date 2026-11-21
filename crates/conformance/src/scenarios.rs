@@ -533,11 +533,7 @@ pub async fn an_at_most_once_call_whose_answer_was_lost_ends_unknown<B: Backend>
     assert_eq!(w.printer.printed.load(Ordering::SeqCst), 1);
 }
 
-pub async fn a_call_whose_last_lease_runs_out_ends_unknown_and_one_answering_an_error_fails<
-    B: Backend,
->(
-    b: &B,
-) {
+pub async fn a_call_whose_lease_runs_out_on_every_attempt_ends_unknown<B: Backend>(b: &B) {
     let w = World::new(b);
     let (a, flaky) = w.flaky("a");
     // Every answer of a charge is lost, as when each call outlives the
@@ -572,21 +568,8 @@ pub async fn a_call_whose_last_lease_runs_out_ends_unknown_and_one_answering_an_
         ("paid".into(), 1),
         "checkout asks the payment system, finds the charge and pays"
     );
-
-    // Every attempt answers an error, the last one too.
-    w.payments.busy.store(3, Ordering::SeqCst);
-    let (o, p) = checkout(&a, 500).await;
-    for wait in [0, 1_000, 2_000] {
-        w.advance(wait);
-        a.settle().await.unwrap();
-    }
-    assert_eq!((w.payments.calls(), w.payments.charges()), (6, 1));
-    assert_eq!(
-        a.process(p).await.unwrap().progress.outcome("charge"),
-        Some(&Outcome::Failed("busy".into()))
-    );
-    assert!(matches!(finished(&a, p).await, Some(Finished::Failed(_))));
-    assert_eq!(status(&a, o).await, "placed");
+    // A last attempt that answers an error ends `Failed`: see
+    // a_call_that_fails_for_now_is_tried_again_then_given_up.
 }
 
 pub async fn a_call_that_fails_for_now_is_tried_again_then_given_up<B: Backend>(b: &B) {
