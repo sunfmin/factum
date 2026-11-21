@@ -5,12 +5,13 @@
 use std::sync::{Arc, Mutex};
 
 use factum::{BoxFuture, Instant, StreamId, Uuid, Value, Version};
-use factum_core::{Event, Position, Query, Table, Work, WorkKind};
+use factum_core::{Event, Position, Query, Table, Work, WorkChange, WorkKind};
 use factum_store::{
     Answer, Batch, Checkpoint, Claim, DeadLetter, Result, Snapshot, Store, StoreError, Unit,
 };
 
 type Matches = Box<dyn Fn(&Unit) -> bool + Send + Sync>;
+type Pause = Box<dyn Fn(String) -> BoxFuture<()> + Send + Sync>;
 
 /// A `Store` method, to cue a failure on.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -69,6 +70,7 @@ pub struct Flaky<S> {
     race: Mutex<Option<(Matches, BoxFuture<()>)>>,
     lose: Mutex<Option<Matches>>,
     batch_race: Mutex<Option<(String, BoxFuture<()>)>>,
+    pause: Option<Pause>,
 }
 
 impl<S: Store> Flaky<S> {
@@ -81,6 +83,23 @@ impl<S: Store> Flaky<S> {
             race: Mutex::new(None),
             lose: Mutex::new(None),
             batch_race: Mutex::new(None),
+            pause: None,
+        }
+    }
+
+    /// After every commit, and every claim that took a row, awaits
+    /// `pause(what it wrote)`: the store's writes, one at a time.
+    pub fn pausing(
+        mut self,
+        pause: impl Fn(String) -> BoxFuture<()> + Send + Sync + 'static,
+    ) -> Self {
+        self.pause = Some(Box::new(pause));
+        self
+    }
+
+    async fn paused(&self, what: impl FnOnce() -> String) {
+        if let Some(pause) = &self.pause {
+            pause(what()).await;
         }
     }
 
@@ -165,6 +184,34 @@ pub fn appends(unit: &Unit, kind: &str) -> bool {
         .any(|e| e.kind == kind)
 }
 
+/// What a unit writes, in short: each event's type and each work change.
+fn written(unit: &Unit) -> String {
+    let events = unit.appends.iter().flat_map(|a| {
+        a.events.iter().map(move |e| match e.data["key"].as_str() {
+            Some(key) => format!(
+                "{}/{} {} {key}",
+                a.stream.aggregate,
+                short(a.stream.id),
+                e.kind
+            ),
+            None => format!("{}/{} {}", a.stream.aggregate, short(a.stream.id), e.kind),
+        })
+    });
+    let work = unit.work.iter().map(|w| match w {
+        WorkChange::Put(r) => format!("put {:?} {}", r.kind, short(r.id)),
+        WorkChange::Wake { kind, id, .. } => format!("wake {kind:?} {}", short(*id)),
+        WorkChange::Done { kind, id } => format!("done {kind:?} {}", short(*id)),
+        WorkChange::Release { kind, id, .. } => format!("release {kind:?} {}", short(*id)),
+        WorkChange::Pace { name, .. } => format!("pace {name}"),
+    });
+    events.chain(work).collect::<Vec<_>>().join("; ")
+}
+
+/// The first eight hex digits of an id.
+pub fn short(id: Uuid) -> String {
+    id.simple().to_string()[..8].to_string()
+}
+
 impl<S: Store> Store for Flaky<S> {
     async fn read_stream(&self, stream: &StreamId, after: Version) -> Result<Vec<Event>> {
         self.cue(Call::ReadStream)?;
@@ -202,7 +249,14 @@ impl<S: Store> Store for Flaky<S> {
             let stream = unit.appends.first().expect("a unit that loses appends");
             return Err(StoreError::Conflict(stream.stream.clone()));
         }
-        self.inner.commit(unit).await
+        let what = written(&unit);
+        let result = self.inner.commit(unit).await;
+        self.paused(|| match &result {
+            Ok(_) => format!("commits {what}"),
+            Err(e) => format!("fails to commit {what}: {e}"),
+        })
+        .await;
+        result
     }
     async fn read_log(&self, after: Position, limit: usize) -> Result<Vec<Event>> {
         self.cue(Call::ReadLog)?;
@@ -210,7 +264,17 @@ impl<S: Store> Store for Flaky<S> {
     }
     async fn claim(&self, claim: Claim) -> Result<Vec<Work>> {
         self.cue(Call::Claim)?;
-        self.inner.claim(claim).await
+        let kind = claim.kind;
+        let rows = self.inner.claim(claim).await?;
+        if !rows.is_empty() {
+            let names: Vec<String> = rows
+                .iter()
+                .map(|r| format!("{} {}", r.name, short(r.id)))
+                .collect();
+            self.paused(|| format!("claims {kind:?}: {}", names.join(", ")))
+                .await;
+        }
+        Ok(rows)
     }
     async fn renew(
         &self,

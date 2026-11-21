@@ -4,3 +4,50 @@
 [sim]
 run = ["cargo", "run", "-q", "-p", "factum-conformance", "--bin", "sim", "--"] # truefit appends the seed
 seeds = 100
+
+# What factum promises for the work that outlives a command, checked by TLC
+# in every order within its bounds; the simulation's runs are its traces:
+# `cargo run -q -p factum-conformance --bin sim -- 7 > run.jsonl;
+# truefit model --trace run.jsonl`.
+[[model]]
+name = "exactly-once"
+spec = "models/ExactlyOnce.tla"
+config = "models/ExactlyOnce.cfg"
+limit = 120
+
+commit = "c0ed55f35f9c4bf02a696d36dc6feb26a8bd9910"
+covers = [
+  { action = "Place", file = "crates/conformance/src/sim.rs", function = "Sim::place" },
+  { action = "ClaimAdvance", file = "crates/engine/src/work.rs", function = "Engine::advance_due" },
+  { action = "ClaimAction", file = "crates/engine/src/work.rs", function = "Engine::deliver" },
+  { action = "Claimed", file = "crates/store/src/lib.rs", function = "claim_row" },
+  { action = "Released", file = "crates/store/src/lib.rs", function = "release_row" },
+  { action = "Request", file = "crates/engine/src/work.rs", function = "Engine::advance_one" },
+  { action = "Wait", file = "crates/engine/src/work.rs", function = "Engine::advance_one" },
+  { action = "Finished", file = "crates/engine/src/work.rs", function = "Engine::advance_one" },
+  { action = "Submit", file = "crates/engine/src/work.rs", function = "Engine::advance_one" },
+  { action = "RecordRun", file = "crates/engine/src/work.rs", function = "Engine::advance_one" },
+  { action = "Decide", file = "crates/core/src/process.rs", function = "advance" },
+  { action = "Decide", file = "crates/conformance/src/domain.rs", function = "CheckoutProcess::next" },
+  { action = "Decide", file = "crates/conformance/src/domain.rs", function = "ReceiptProcess::next" },
+  { action = "Recorded", file = "crates/engine/src/work.rs", function = "Engine::answer_step" },
+  { action = "Recorded", file = "crates/core/src/work.rs", function = "effects" },
+  { action = "Expire", file = "crates/engine/src/work.rs", function = "Engine::run_scheduled" },
+  { action = "EndUnknown", file = "crates/core/src/model.rs", function = "RetryPolicy::on_claim" },
+  { action = "CallOutside", file = "crates/engine/src/work.rs", function = "Engine::deliver_one" },
+  { action = "CallOutside", file = "crates/conformance/src/sim.rs", function = "call" },
+  { action = "Answered", file = "crates/engine/src/work.rs", function = "Engine::end_attempt" },
+  { action = "Answered", file = "crates/core/src/model.rs", function = "RetryPolicy::after_failure" },
+  { action = "charged_once", file = "crates/conformance/src/sim.rs", function = "Sim::seen" },
+  { action = "paid_once", file = "crates/conformance/src/sim.rs", function = "Sim::seen" },
+  { action = "printed_at_most_once", file = "crates/conformance/src/sim.rs", function = "Sim::seen" },
+  { action = "unknown_never_done", file = "crates/conformance/src/sim.rs", function = "Sim::seen" },
+  { action = "failed_never_done", file = "crates/conformance/src/sim.rs", function = "Sim::seen" },
+  { action = "nothing_lost", file = "crates/conformance/src/sim.rs", function = "Sim::seen" },
+]
+
+# Each step's record as the model's state: the orders as the simulation
+# prints them. The calls runners hold, the stored answers and the wakes
+# held are left free: TLC tries every value the model allows.
+[model.trace]
+orders = "r.state.orders"
