@@ -1,0 +1,21 @@
+{
+  "tree": "df1055d8613c9c8c9d9abcfa062634db9d666007+d1fba762150c532c",
+  "picker": "codex:01a1fb6c-f3a0-7f03-819d-fcfce9b21086:default",
+  "author": "claude-code:6558a75d-71b5-515c-afd2-f7f36eb393df:opus",
+  "picks": {
+    "rust": [
+      {
+        "name": "crates/core/src/work.rs:162:9: replace Work::input -> &Value with Box::leak(Box::new(Default::default()))",
+        "why": "Tests that exercise scheduling or task claiming without asserting a non-null payload reaches the consumer could miss every input becoming JSON null.",
+        "outcome": "killed",
+        "first_outcome": "killed"
+      },
+      {
+        "name": "crates/engine/src/work.rs:502:9: replace Engine<S>::run_scheduled -> Result<(), Error> with Ok(())",
+        "why": "A test that checks only schedule bookkeeping could miss that the due command was never submitted.",
+        "outcome": "killed",
+        "first_outcome": "killed"
+      }
+    ]
+  }
+}

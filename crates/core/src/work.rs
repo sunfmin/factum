@@ -132,19 +132,6 @@ fn encode<T: Serialize>(payload: T) -> Value {
 /// The payload of a work row is written by `effects` and read only here:
 /// a row that does not decode is an error, never a default.
 impl Work {
-    fn expect_kind(&self, kind: WorkKind) -> Result<(), String> {
-        if self.kind == kind {
-            Ok(())
-        } else {
-            Err(format!(
-                "{} row {} read as {}",
-                self.kind.as_str(),
-                self.id,
-                kind.as_str()
-            ))
-        }
-    }
-
     fn bad(&self, why: impl std::fmt::Display) -> String {
         format!(
             "{} row {} does not decode: {why}",
@@ -155,13 +142,11 @@ impl Work {
 
     /// An action row's call.
     pub fn call(&self) -> Result<Call, String> {
-        self.expect_kind(WorkKind::Action)?;
         Call::deserialize(&self.payload).map_err(|e| self.bad(e))
     }
 
     /// A wait row's process, step, stream and event.
     pub fn wait(&self) -> Result<Wait, String> {
-        self.expect_kind(WorkKind::Await)?;
         let p = AwaitPayload::deserialize(&self.payload).map_err(|e| self.bad(e))?;
         Ok(Wait {
             process: self.process.ok_or_else(|| self.bad("no process"))?,
@@ -173,11 +158,8 @@ impl Work {
 
     /// A task row's input, or a schedule row's command params: the
     /// payload as it was given.
-    pub fn input(&self) -> Result<&Value, String> {
-        if self.kind != WorkKind::Schedule {
-            self.expect_kind(WorkKind::Task)?;
-        }
-        Ok(&self.payload)
+    pub fn input(&self) -> &Value {
+        &self.payload
     }
 }
 
