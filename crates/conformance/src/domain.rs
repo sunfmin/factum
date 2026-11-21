@@ -707,6 +707,20 @@ impl Projection for OrderList {
 
 // ---- the model ----
 
+/// How payments are called: three attempts, backing off from a second.
+pub fn charge_policy() -> ActionPolicy {
+    ActionPolicy {
+        retry: RetryPolicy {
+            attempts: 3,
+            backoff_ms: 1_000,
+            factor: 2,
+            max_backoff_ms: 60_000,
+            jitter_percent: 0,
+        },
+        timeout_ms: 30_000,
+    }
+}
+
 pub fn task_types() -> Vec<TaskType> {
     vec![
         TaskType {
@@ -750,23 +764,10 @@ pub fn shop(
         .process::<DeliveryProcess>()
         .process::<PickupProcess>()
         .process::<LabelProcess>()
-        .action(
-            "payment.charge",
-            ActionPolicy {
-                retry: RetryPolicy {
-                    attempts: 3,
-                    backoff_ms: 1_000,
-                    factor: 2,
-                    max_backoff_ms: 60_000,
-                    jitter_percent: 0,
-                },
-                timeout_ms: 30_000,
-            },
-            move |key, params| {
-                let answer = payments.charge(key, &params);
-                async move { answer }
-            },
-        )
+        .action("payment.charge", charge_policy(), move |key, params| {
+            let answer = payments.charge(key, &params);
+            async move { answer }
+        })
         .action("printer.print", ActionPolicy::default(), move |_, _| {
             printer.printed.fetch_add(1, Ordering::SeqCst);
             async { ActionAnswer::Done(json!("ok")) }

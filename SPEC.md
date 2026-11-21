@@ -143,6 +143,19 @@ SQLite store, are caught. The one not caught (a snapshot replaced by an
 older one) changes no answer, only how long a fold takes. The SQLite suite
 passed 30 runs of 30 in a row.
 
+Beside the scenarios, a **seeded simulation** (`factum_conformance::sim`,
+run by `truefit sim` from `truefit.toml`, in the gate) drives the same
+public API on the in-memory store with what no scenario lines up by hand:
+from one seed, orders placed, ticks of three runners, clock moves, a
+runner stopping between any two store calls of a tick, a store write
+failing, and calls to another system answering at once, "try later",
+late (after a takeover answered too) or never. After every step it
+checks that no order is charged twice or paid twice, an at-most-once call
+is made at most once, no step is recorded done whose call was not made,
+and every unfinished process keeps a work row; after settling, every
+process has finished. A seed reruns step for step; a failing one is kept
+in `.truefit/seeds/`.
+
 A store's file format is the one thing the engine's API cannot reach, so
 it is tested beside the store: `crates/sqlite/tests/conformance.rs` starts
 every scenario's database from the schema as an earlier release wrote it

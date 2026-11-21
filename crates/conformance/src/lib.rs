@@ -8,6 +8,7 @@
 pub mod domain;
 pub mod flaky;
 pub mod scenarios;
+pub mod sim;
 
 use std::sync::Arc;
 

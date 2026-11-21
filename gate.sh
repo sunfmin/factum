@@ -22,3 +22,6 @@ cargo fmt --all --check
 cargo clippy --workspace --all-targets --quiet -- -D warnings
 # Every scenario on every store, measured against .slimfit/baseline.json.
 slimfit check
+# The seeded simulation of the engine (truefit.toml): kept failing seeds
+# first, then 100 new ones, ~35s. A seed that fails is kept in .truefit/seeds/.
+truefit sim
