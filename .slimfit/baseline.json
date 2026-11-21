@@ -28,6 +28,14 @@
       "commits_90d": 9,
       "commits_total": 9,
       "reason": "Already deep: its interface is open/path plus the Store trait (SPEC §3), a real seam with two adapters (memory, sqlite). The rules every store shares (claim_row, wake_row, release_row, check_unit, check_batch) already moved to factum-store in factum#14/#15; what remains is SQL only (schema steps, row codecs, generated projection tables, claim query), the knowledge this adapter exists to hide. Tests cross only the engine API, plus the SPEC-sanctioned file-format test. Splitting the file would move lines, not add depth."
+    },
+    {
+      "suite": "rust",
+      "file": "crates/engine/src/work.rs",
+      "prod_lines": 586,
+      "commits_90d": 10,
+      "commits_total": 10,
+      "reason": "Deep already: four public task calls (claim_task, heartbeat, finish_task, cancel_task) and five crate entries tick calls (advance_due, deliver, run_due, expire_waits, arrived) hide leases, retry/at-most-once, key pacing, lost-race retry and wait-before-row answers. Every row kind runs through one claim/drain loop and ends through one end_attempt/answer_step path; fault naming lives in item(). Tests cross only the engine API. Splitting by row kind would move lines, not add depth; remaining smells (answer_step's 7 args, a repeated Step::Await rebuild in advance_one) are local and small."
     }
   ],
   "measured": {
