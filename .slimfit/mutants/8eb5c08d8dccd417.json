@@ -1,0 +1,6 @@
+{
+  "tree": "ea25b8b6de0295d13a8a2ece8c9403ca32ab4be0+d1fba762150c532c",
+  "picker": "codex:01a1fcaf-5a2d-78d0-be17-962f18f1a81f:default",
+  "author": "claude-code:413e5bcf-2b38-57be-9eda-89047210b6ac:opus",
+  "none": "The conformance scenarios check that an at-most-once call runs once and that a repeatedly expired call runs all three attempts before ending Unknown, so every buildable guard mutation would change a checked result."
+}

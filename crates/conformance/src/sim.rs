@@ -98,16 +98,23 @@ static STEP: AtomicU64 = AtomicU64::new(0);
 fn call(outside: &Shared, action: &str, key: Uuid, params: &Value) -> BoxFuture<ActionAnswer> {
     let mut o = outside.lock().unwrap();
     let mode = if o.calm { 0 } else { o.rng.below(10) };
-    if mode == 9 {
+    // A key it charged before answers that charge, never "try later": the
+    // payment system keeps each key's answer, as an at-least-once call needs.
+    let replays = action == "payment.charge" && o.charged.values().any(|ks| ks.contains(&key));
+    if mode == 9 && !replays {
         return Box::pin(async { ActionAnswer::Passing("busy".into()) });
     }
+    let order: Option<Uuid> = params["order"].as_str().and_then(|s| s.parse().ok());
     let answer = if action == "printer.print" {
         *o.printed.entry(key).or_default() += 1;
         ActionAnswer::Done(json!("ok"))
+    } else if action == "payment.find" {
+        let charge = o.charged.get(&order.unwrap_or_default());
+        let charge = charge.and_then(|keys| keys.first());
+        ActionAnswer::Done(charge.map_or(Value::Null, |k| json!({ "charge": k })))
     } else if params["amount"].as_i64().unwrap_or(0) > LIMIT {
         ActionAnswer::Rejected(Rejection::new("declined", "over the limit"))
     } else {
-        let order = params["order"].as_str().and_then(|s| s.parse().ok());
         o.charged
             .entry(order.unwrap_or_default())
             .or_default()
@@ -207,7 +214,7 @@ impl Sim {
             printed: BTreeMap::new(),
             held: Vec::new(),
         }));
-        let (pay, print) = (outside.clone(), outside.clone());
+        let (pay, find, print) = (outside.clone(), outside.clone(), outside.clone());
         let model = Arc::new(
             Model::new()
                 .command::<PlaceOrder>()
@@ -218,6 +225,9 @@ impl Sim {
                 .process::<ReceiptProcess>()
                 .action("payment.charge", charge_policy(), move |key, params| {
                     call(&pay, "payment.charge", key, &params)
+                })
+                .action("payment.find", charge_policy(), move |key, params| {
+                    call(&find, "payment.find", key, &params)
                 })
                 .action(
                     "printer.print",
@@ -479,6 +489,10 @@ impl Sim {
                     "unknown_never_done",
                     !matches!(receipt.outcome, Some(Outcome::Ok(_))) || printed == 1,
                 ),
+                (
+                    "failed_never_done",
+                    !matches!(checkout.outcome, Some(Outcome::Failed(_))) || charged == 0,
+                ),
                 ("nothing_lost", checkout.kept && receipt.kept),
             ];
             if broken.is_none() {
@@ -577,7 +591,7 @@ fn outcome_name(o: &Outcome) -> &'static str {
         Outcome::Ok(_) => "ok",
         Outcome::Rejected(_) => "rejected",
         Outcome::Failed(_) => "failed",
-        Outcome::Unknown => "unknown",
+        Outcome::Unknown(_) => "unknown",
         Outcome::TimedOut => "timed_out",
         Outcome::Cancelled => "cancelled",
     }

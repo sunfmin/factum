@@ -445,7 +445,7 @@ pub async fn a_process_runs_to_completion<B: Backend>(b: &B) {
             .charged
             .lock()
             .unwrap()
-            .contains(&step_key(p, "charge"))
+            .contains_key(&step_key(p, "charge"))
     );
 }
 
@@ -523,15 +523,20 @@ pub async fn an_at_most_once_call_whose_answer_was_lost_ends_unknown<B: Backend>
     let bb = w.engine("b");
     bb.settle().await.unwrap();
     let view = bb.process(p).await.unwrap();
-    assert_eq!(view.progress.outcome("print"), Some(&Outcome::Unknown));
+    assert_eq!(
+        view.progress.outcome("print"),
+        Some(&Outcome::Unknown(
+            "its lease ran out on attempt 1; done at most once, it is not tried again".into()
+        ))
+    );
     assert!(matches!(view.finished, Some(Finished::Stuck(_))));
     assert_eq!(w.printer.printed.load(Ordering::SeqCst), 1);
 }
 
-pub async fn a_call_whose_lease_runs_out_on_every_attempt_ends_failed<B: Backend>(b: &B) {
+pub async fn a_call_whose_lease_runs_out_on_every_attempt_ends_unknown<B: Backend>(b: &B) {
     let w = World::new(b);
     let (a, flaky) = w.flaky("a");
-    // Every answer of the charge is lost, as when each call outlives the
+    // Every answer of a charge is lost, as when each call outlives the
     // action's timeout; only its end without a call is recorded.
     flaky.lose_every(|u| {
         u.appends
@@ -553,12 +558,18 @@ pub async fn a_call_whose_lease_runs_out_on_every_attempt_ends_failed<B: Backend
     );
     assert_eq!(
         a.process(p).await.unwrap().progress.outcome("charge"),
-        Some(&Outcome::Failed(
-            "its lease ran out on every attempt".into()
-        ))
+        Some(&Outcome::Unknown(
+            "its lease ran out on attempt 3 of 3, the last".into()
+        )),
+        "the last attempt may have charged: not known, not failed"
     );
-    assert!(matches!(finished(&a, p).await, Some(Finished::Failed(_))));
-    assert_eq!(status(&a, o).await, "placed");
+    assert_eq!(
+        (status(&a, o).await, w.payments.charges()),
+        ("paid".into(), 1),
+        "checkout asks the payment system, finds the charge and pays"
+    );
+    // A last attempt that answers an error ends `Failed`: see
+    // a_call_that_fails_for_now_is_tried_again_then_given_up.
 }
 
 pub async fn a_call_that_fails_for_now_is_tried_again_then_given_up<B: Backend>(b: &B) {
@@ -890,7 +901,10 @@ pub async fn an_at_most_once_task_whose_lease_ran_out_ends_unknown<B: Backend>(b
     assert!(e.claim_task("print", "w2", 5_000).await.unwrap().is_none());
     e.settle().await.unwrap();
     let view = e.process(p).await.unwrap();
-    assert_eq!(view.progress.outcome("print"), Some(&Outcome::Unknown));
+    assert!(matches!(
+        view.progress.outcome("print"),
+        Some(Outcome::Unknown(_))
+    ));
     assert_eq!(view.finished, Some(Finished::Stuck("unknown".into())));
 }
 

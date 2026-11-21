@@ -153,9 +153,10 @@ pub enum Outcome {
     Rejected(Rejection),
     /// Every attempt failed, or one failed for good.
     Failed(String),
-    /// Done at most once and the answer was lost: it may or may not have
-    /// happened.
-    Unknown,
+    /// No answer came and the step is not tried again: done at most once,
+    /// or its last attempt's lease ran out. It may or may not have
+    /// happened; the text says how many attempts were made.
+    Unknown(String),
     TimedOut,
     Cancelled,
 }

@@ -122,7 +122,12 @@ pub trait Process: Send + Sync + 'static {
     fn next(input: &Self::Input, progress: &Progress) -> Next;
 }
 
-/// How a failing call or task attempt is tried again.
+/// How a failing call or task attempt is tried again. After its last
+/// attempt a step ends `Failed` if that attempt answered an error, and
+/// `Unknown` if its lease ran out (its runner died, or it outlived its
+/// timeout): the work may have been done, and `next` must find out. An
+/// answered error is believed, so a system called at least once answers
+/// a key it has done with what it answered, not "try later".
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct RetryPolicy {
     /// How many attempts in all before the step fails.
@@ -168,22 +173,27 @@ impl RetryPolicy {
 
     /// On a claim of an action's or a task's row: whether this attempt
     /// runs, or the step ends without it. A row taken over from a lease
-    /// that ran out ends `Unknown` when done at most once, and `Failed`
-    /// once its attempts are spent.
+    /// that ran out ends `Unknown` when done at most once, and also once
+    /// its attempts are spent: the attempt whose lease ran out may have
+    /// done the work, so its outcome is not known, only that no answer came.
     pub fn on_claim(&self, row: &Work, at_most_once: bool) -> Attempt {
-        if !row.taken_over {
-            Attempt::Run
+        let why = if !row.taken_over {
+            return Attempt::Run;
         } else if at_most_once {
-            Attempt::End(Outcome::Unknown)
+            "; done at most once, it is not tried again".to_string()
         } else if row.attempts > self.attempts {
-            Attempt::End(Outcome::Failed("its lease ran out on every attempt".into()))
+            format!(" of {}, the last", self.attempts)
         } else {
-            Attempt::Run
-        }
+            return Attempt::Run;
+        };
+        let tried = row.attempts.saturating_sub(1);
+        Attempt::End(Outcome::Unknown(format!(
+            "its lease ran out on attempt {tried}{why}"
+        )))
     }
 
-    /// After an attempt failed for now: when the row is due again, or the
-    /// step's end once its attempts are spent.
+    /// After an attempt failed for now: when the row is due again, or, once
+    /// its attempts are spent, `Failed`: the last attempt answered an error.
     pub fn after_failure(
         &self,
         row: &Work,
