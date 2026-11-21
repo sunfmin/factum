@@ -1,0 +1,33 @@
+{
+  "tip": "f7493deeae9d03101ec711c84bf950b655015da9",
+  "from": "333f465666d1c423fe3b88402b1c906bc7386057",
+  "pool": 38,
+  "drawn": {
+    "rust": [
+      {
+        "name": "crates/engine/src/work.rs:616:58: replace && with || in Engine<S>::finish_task",
+        "outcome": "killed"
+      },
+      {
+        "name": "crates/engine/src/work.rs:418:9: replace Engine<S>::deliver -> Result<usize, Error> with Ok(0)",
+        "outcome": "killed"
+      },
+      {
+        "name": "crates/engine/src/work.rs:401:9: replace Engine<S>::expire_wait -> Result<(), Error> with Ok(())",
+        "outcome": "killed"
+      },
+      {
+        "name": "crates/core/src/model.rs:193:25: replace >= with < in RetryPolicy::after_failure",
+        "outcome": "killed"
+      },
+      {
+        "name": "crates/engine/src/work.rs:316:13: replace && with || in Engine<S>::end_attempt",
+        "outcome": "unviable"
+      },
+      {
+        "name": "crates/core/src/model.rs:178:32: replace > with < in RetryPolicy::on_claim",
+        "outcome": "killed"
+      }
+    ]
+  }
+}
