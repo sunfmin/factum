@@ -102,14 +102,18 @@ Place ==
                                    receipt |-> NewProc("receipt")])
     /\ UNCHANGED <<calls, answers, woken>>
 
+\* The rows of `S` (process pairs) of the kind `r` ("advance", "action"), claimed.
+ClaimRows(S, r) ==
+    [o \in O |-> [orders[o] EXCEPT
+        !.checkout[r] = IF <<o, "checkout">> \in S THEN Claimed(@) ELSE @,
+        !.receipt[r] = IF <<o, "receipt">> \in S THEN Claimed(@) ELSE @]]
+
 (* `advance_due`'s claim: some due advance rows, some of them taken over. *)
 ClaimAdvance ==
     \E S \in SUBSET {<<o, p>> \in O \X Procs :
                        P(o, p).advance.exists /\ ~P(o, p).advance.waiting} :
        /\ S # {}
-       /\ orders' = [o \in O |-> [orders[o] EXCEPT
-                       !.checkout.advance = IF <<o, "checkout">> \in S THEN Claimed(@) ELSE @,
-                       !.receipt.advance = IF <<o, "receipt">> \in S THEN Claimed(@) ELSE @]]
+       /\ orders' = ClaimRows(S, "advance")
        /\ woken' = woken \ S
        /\ UNCHANGED <<calls, answers>>
 
@@ -120,12 +124,9 @@ ClaimAction ==
     \E S \in SUBSET {<<o, p>> \in O \X Procs :
                        P(o, p).pending = a /\ P(o, p).action.exists} :
        /\ S # {}
-       /\ orders' = [o \in O |-> [orders[o] EXCEPT
-                       !.checkout.action = IF <<o, "checkout">> \in S THEN Claimed(@) ELSE @,
-                       !.receipt.action = IF <<o, "receipt">> \in S THEN Claimed(@) ELSE @]]
-       \* A call whose lease is taken over writes nothing again (each of its
-       \* writes is under its lease, and it calls only under a renewed one):
-       \* its runner's commits are lost, `Unseen`.
+       /\ orders' = ClaimRows(S, "action")
+       \* A call whose lease is taken over is not Current again: it neither
+       \* calls nor writes (its runner's commits are lost, `Unseen`).
        /\ calls' = {c \in calls : <<c.o, c.p>> \notin S} \cup
             {[o |-> x[1], p |-> x[2], step |-> a, lease |-> P(x[1], x[2]).action.attempts + 1,
               taken_over |-> P(x[1], x[2]).action.held, phase |-> "claimed", answer |-> ""] : x \in S}
@@ -184,13 +185,14 @@ Expire(o) ==
     /\ orders' = [orders EXCEPT ![o].cancelled = @ + 1]
     /\ UNCHANGED <<calls, answers, woken>>
 
-(* `deliver_one`, for an attempt `c` a runner holds.                       *)
+(* `deliver_one`, for an attempt `c` a runner holds under its lease. Each  *)
+(* of its writes is guarded by the lease; one that lost it is `Unseen`.   *)
 Current(c) == LET q == P(c.o, c.p) IN
               q.pending = c.step /\ q.action.held /\ q.action.attempts = c.lease
 Ended(c, record) ==
+    /\ Current(c)
     /\ calls' = calls \ {c}
-    /\ IF Current(c) THEN record
-       ELSE UNCHANGED <<orders, woken>>   \* the lease is lost: nothing is written
+    /\ record
     /\ UNCHANGED answers
 
 \* `RetryPolicy::on_claim`: taken over when done at most once, or past the

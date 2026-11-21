@@ -98,22 +98,19 @@ type Shared = Arc<Mutex<Outside>>;
 
 /// Whether the future polled last waits on a held answer.
 static BLOCKED: AtomicBool = AtomicBool::new(false);
-/// Whether the future polled last paused after a step: a store write or a
-/// call, which `WROTE` names.
-static PAUSED: AtomicBool = AtomicBool::new(false);
+/// The step the future polled last took, a store write or a call, once it
+/// took one: empty until then.
 static WROTE: Mutex<String> = Mutex::new(String::new());
 
 /// Ends a runner's step: its tick goes on when it is next driven.
 fn pause(what: String) -> BoxFuture<()> {
-    let mut once = false;
-    Box::pin(std::future::poll_fn(move |_| {
-        if once {
-            return Poll::Ready(());
+    let mut what = Some(what);
+    Box::pin(std::future::poll_fn(move |_| match what.take() {
+        Some(w) => {
+            *WROTE.lock().unwrap() = w;
+            Poll::Pending
         }
-        once = true;
-        *WROTE.lock().unwrap() = what.clone();
-        PAUSED.store(true, Ordering::SeqCst);
-        Poll::Pending
+        None => Poll::Ready(()),
     }))
 }
 /// The step running, for a panic's verdict.
@@ -126,14 +123,11 @@ fn call(outside: &Shared, action: &str, key: Uuid, params: &Value) -> BoxFuture<
     // payment system keeps each key's answer, as an at-least-once call needs.
     let replays = action == "payment.charge" && o.charged.values().any(|ks| ks.contains(&key));
     let label = format!("{action} {}", short(key));
-    if mode == 9 && !replays {
-        return Box::pin(async move {
-            pause(format!("calls {label}: busy")).await;
-            ActionAnswer::Passing("busy".into())
-        });
-    }
+    let busy = mode == 9 && !replays;
     let order: Option<Uuid> = params["order"].as_str().and_then(|s| s.parse().ok());
-    let answer = if action == "printer.print" {
+    let answer = if busy {
+        ActionAnswer::Passing("busy".into())
+    } else if action == "printer.print" {
         *o.printed.entry(key).or_default() += 1;
         ActionAnswer::Done(json!("ok"))
     } else if action == "payment.find" {
@@ -149,9 +143,10 @@ fn call(outside: &Shared, action: &str, key: Uuid, params: &Value) -> BoxFuture<
             .insert(key);
         ActionAnswer::Done(json!({ "charge": key }))
     };
-    if mode < 7 {
+    if busy || mode < 7 {
+        let what = format!("calls {label}{}", if busy { ": busy" } else { "" });
         return Box::pin(async move {
-            pause(format!("calls {label}")).await;
+            pause(what).await;
             answer
         });
     }
@@ -177,13 +172,13 @@ fn call(outside: &Shared, action: &str, key: Uuid, params: &Value) -> BoxFuture<
 /// held answer.
 fn drive<T>(fut: &mut Pin<Box<dyn Future<Output = T> + Send>>) -> Option<T> {
     let mut cx = Context::from_waker(Waker::noop());
+    WROTE.lock().unwrap().clear();
     for _ in 0..100_000 {
         BLOCKED.store(false, Ordering::SeqCst);
-        PAUSED.store(false, Ordering::SeqCst);
         match fut.as_mut().poll(&mut cx) {
             Poll::Ready(v) => return Some(v),
             Poll::Pending if BLOCKED.load(Ordering::SeqCst) => return None,
-            Poll::Pending if PAUSED.load(Ordering::SeqCst) => return None,
+            Poll::Pending if !WROTE.lock().unwrap().is_empty() => return None,
             Poll::Pending => {}
         }
     }
@@ -448,7 +443,6 @@ impl Sim {
         }
         let r = &mut self.runners[i];
         let fut = r.tick.as_mut().expect("a tick to drive");
-        WROTE.lock().unwrap().clear();
         let Some(result) = drive(fut) else {
             // A step, or a call whose answer is held, which is a step too.
             let wrote = WROTE.lock().unwrap();
@@ -513,12 +507,10 @@ impl Sim {
                 .printed
                 .get(&step_key(o.receipt, "print"))
                 .unwrap_or(&0);
-            let paid = now(self.front.history(&StreamId::new("order", o.id)))
-                .map(|h| h.iter().filter(|e| e.kind == "OrderPaid").count())
-                .unwrap_or(0);
-            let cancelled = now(self.front.history(&StreamId::new("order", o.id)))
-                .map(|h| h.iter().filter(|e| e.kind == "OrderCancelled").count())
-                .unwrap_or(0);
+            let history =
+                now(self.front.history(&StreamId::new("order", o.id))).unwrap_or_default();
+            let count = |kind: &str| history.iter().filter(|e| e.kind == kind).count();
+            let (paid, cancelled) = (count("OrderPaid"), count("OrderCancelled"));
             let checkout = self.process(o.checkout, "charge", &["charge", "find", "pay", "cancel"]);
             let receipt = self.process(o.receipt, "print", &["print"]);
             let checks = [
