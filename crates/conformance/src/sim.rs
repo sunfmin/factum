@@ -5,6 +5,12 @@
 //! system answering late, twice or never — with factum's promises about
 //! the work that outlives a command checked after every step.
 //!
+//! A runner's step is one store write (a commit, or a claim that took a
+//! row) or one call to another system: its tick pauses after each, so
+//! the runners' ticks interleave write by write. Each step's line is a
+//! state of `models/ExactlyOnce.tla`, and a run is checked as its trace
+//! (`truefit model --trace`).
+//!
 //! Everything is chosen from the seed and nothing else: one clock only the
 //! simulation moves, one random source, one thread, and futures polled by
 //! hand, so a seed reruns step for step.
@@ -17,10 +23,10 @@ use std::sync::{Arc, Mutex};
 use std::task::{Context, Poll, Waker};
 
 use factum::{
-    ActionAnswer, ActionPolicy, BoxFuture, By, Engine, Error, ManualClock, MemoryStore, Model,
-    Outcome, Rejection, Step, Store, StreamId, Submission, Tick, Uuid, Value,
+    ActionAnswer, ActionPolicy, BoxFuture, By, Engine, Error, Instant, ManualClock, MemoryStore,
+    Model, Outcome, Rejection, Step, Store, StreamId, Submission, Tick, Uuid, Value,
 };
-use factum_core::{WorkKind, step_key};
+use factum_core::{Finished, Work, WorkKind, step_key};
 use serde_json::json;
 
 use crate::START;
@@ -28,14 +34,14 @@ use crate::domain::{
     CancelOrder, Checkout, CheckoutProcess, ExpireOrder, LIMIT, OrderRef, PayOrder, Place,
     PlaceOrder, ReceiptProcess, charge_policy,
 };
-use crate::flaky::{Call, Flaky};
+use crate::flaky::{Call, Flaky, short};
 
 /// How many steps one seed runs before it settles.
-const STEPS: u64 = 200;
+const STEPS: u64 = 400;
 const RUNNERS: usize = 3;
 const MAX_ORDERS: usize = 6;
-/// How many rounds settling may take before what is left counts as lost.
-const SETTLE_ROUNDS: u64 = 60;
+/// How many steps settling may take before what is left counts as lost.
+const SETTLE_STEPS: u64 = 3_000;
 
 /// The one random source: splitmix64.
 struct Rng(u64);
@@ -92,6 +98,21 @@ type Shared = Arc<Mutex<Outside>>;
 
 /// Whether the future polled last waits on a held answer.
 static BLOCKED: AtomicBool = AtomicBool::new(false);
+/// The step the future polled last took, a store write or a call, once it
+/// took one: empty until then.
+static WROTE: Mutex<String> = Mutex::new(String::new());
+
+/// Ends a runner's step: its tick goes on when it is next driven.
+fn pause(what: String) -> BoxFuture<()> {
+    let mut what = Some(what);
+    Box::pin(std::future::poll_fn(move |_| match what.take() {
+        Some(w) => {
+            *WROTE.lock().unwrap() = w;
+            Poll::Pending
+        }
+        None => Poll::Ready(()),
+    }))
+}
 /// The step running, for a panic's verdict.
 static STEP: AtomicU64 = AtomicU64::new(0);
 
@@ -101,11 +122,12 @@ fn call(outside: &Shared, action: &str, key: Uuid, params: &Value) -> BoxFuture<
     // A key it charged before answers that charge, never "try later": the
     // payment system keeps each key's answer, as an at-least-once call needs.
     let replays = action == "payment.charge" && o.charged.values().any(|ks| ks.contains(&key));
-    if mode == 9 && !replays {
-        return Box::pin(async { ActionAnswer::Passing("busy".into()) });
-    }
+    let label = format!("{action} {}", short(key));
+    let busy = mode == 9 && !replays;
     let order: Option<Uuid> = params["order"].as_str().and_then(|s| s.parse().ok());
-    let answer = if action == "printer.print" {
+    let answer = if busy {
+        ActionAnswer::Passing("busy".into())
+    } else if action == "printer.print" {
         *o.printed.entry(key).or_default() += 1;
         ActionAnswer::Done(json!("ok"))
     } else if action == "payment.find" {
@@ -121,11 +143,16 @@ fn call(outside: &Shared, action: &str, key: Uuid, params: &Value) -> BoxFuture<
             .insert(key);
         ActionAnswer::Done(json!({ "charge": key }))
     };
-    if mode < 7 {
-        return Box::pin(async move { answer });
+    if busy || mode < 7 {
+        let what = format!("calls {label}{}", if busy { ": busy" } else { "" });
+        return Box::pin(async move {
+            pause(what).await;
+            answer
+        });
     }
+    *WROTE.lock().unwrap() = format!("calls {label}: the answer is held");
     let held = Arc::new(Mutex::new(Held {
-        label: format!("{action} {}", short(key)),
+        label,
         answer,
         released: false,
     }));
@@ -141,18 +168,17 @@ fn call(outside: &Shared, action: &str, key: Uuid, params: &Value) -> BoxFuture<
     }))
 }
 
-fn short(id: Uuid) -> String {
-    id.simple().to_string()[..8].to_string()
-}
-
-/// Polls `fut` until it is ready, or waits on a held answer.
+/// Polls `fut` until it is ready, pauses after a step, or waits on a
+/// held answer.
 fn drive<T>(fut: &mut Pin<Box<dyn Future<Output = T> + Send>>) -> Option<T> {
     let mut cx = Context::from_waker(Waker::noop());
+    WROTE.lock().unwrap().clear();
     for _ in 0..100_000 {
         BLOCKED.store(false, Ordering::SeqCst);
         match fut.as_mut().poll(&mut cx) {
             Poll::Ready(v) => return Some(v),
             Poll::Pending if BLOCKED.load(Ordering::SeqCst) => return None,
+            Poll::Pending if !WROTE.lock().unwrap().is_empty() => return None,
             Poll::Pending => {}
         }
     }
@@ -184,6 +210,7 @@ struct Order {
     id: Uuid,
     checkout: Uuid,
     receipt: Uuid,
+    total: i64,
 }
 
 /// One step's state, as the invariants read it.
@@ -202,6 +229,8 @@ struct Sim {
     runners: Vec<Runner>,
     restarts: u32,
     orders: Vec<Order>,
+    /// The runners still to tick in this round of settling.
+    round: Vec<usize>,
 }
 
 impl Sim {
@@ -248,6 +277,7 @@ impl Sim {
             runners: Vec::new(),
             restarts: 0,
             orders: Vec::new(),
+            round: Vec::new(),
         };
         for _ in 0..RUNNERS {
             let r = sim.runner();
@@ -259,7 +289,7 @@ impl Sim {
     fn runner(&mut self) -> Runner {
         self.restarts += 1;
         let holder = format!("runner-{}", self.restarts);
-        let flaky = Arc::new(Flaky::new(self.store.clone()));
+        let flaky = Arc::new(Flaky::new(self.store.clone()).pausing(pause));
         let engine = Engine::new(
             flaky.clone(),
             self.model.clone(),
@@ -286,19 +316,19 @@ impl Sim {
             }
         }
         self.calm();
-        for round in 1..=SETTLE_ROUNDS {
-            let step = STEPS + round;
+        for n in 1..=SETTLE_STEPS {
+            let step = STEPS + n;
             STEP.store(step, Ordering::SeqCst);
-            let event = self.settle_round();
+            let event = self.settle_step();
             if !self.report(step, &event) {
                 return;
             }
-            if self.orders.iter().all(|o| self.finished(o)) {
+            if self.round.is_empty() && self.orders.iter().all(|o| self.finished(o)) {
                 println!("{}", json!({ "verdict": "pass", "steps": step }));
                 return;
             }
         }
-        fail("nothing_lost", STEPS + SETTLE_ROUNDS);
+        fail("nothing_lost", STEPS + SETTLE_STEPS);
     }
 
     /// Prints the step and whether every invariant holds after it.
@@ -356,8 +386,9 @@ impl Sim {
             id: self.rng.id(),
             checkout: self.rng.id(),
             receipt: self.rng.id(),
+            total: 1 + self.rng.below(LIMIT as u64 + 200) as i64,
         };
-        let total = 1 + self.rng.below(LIMIT as u64 + 200) as i64;
+        let total = order.total;
         let by = By::Principal("person:ann".into());
         let placed = Place {
             order: order.id,
@@ -385,7 +416,7 @@ impl Sim {
     }
 
     /// Lets one held answer through, late: after a takeover answered too,
-    /// it is the call's second answer.
+    /// it is the call's second answer. Its runner goes on when next ticked.
     fn release(&mut self) -> String {
         let waiting: Vec<_> = {
             let o = self.outside.lock().unwrap();
@@ -399,13 +430,9 @@ impl Sim {
             return "no answer held".into();
         }
         let held = &waiting[self.rng.below(waiting.len() as u64) as usize];
-        let label = {
-            let mut h = held.lock().unwrap();
-            h.released = true;
-            h.label.clone()
-        };
-        let resumed: Vec<String> = (0..RUNNERS).filter_map(|i| self.resume(i)).collect();
-        format!("{label} answers late; {}", resumed.join(", "))
+        let mut h = held.lock().unwrap();
+        h.released = true;
+        format!("{} answers late", h.label)
     }
 
     fn tick(&mut self, i: usize) -> String {
@@ -414,43 +441,51 @@ impl Sim {
             let engine = r.engine.clone();
             r.tick = Some(Box::pin(async move { engine.tick().await }));
         }
-        self.resume(i)
-            .unwrap_or_else(|| format!("{} waits", self.runners[i].holder))
-    }
-
-    /// Drives runner `i`'s tick on; what came of it, if it ended.
-    fn resume(&mut self, i: usize) -> Option<String> {
         let r = &mut self.runners[i];
-        let fut = r.tick.as_mut()?;
-        let result = drive(fut)?;
+        let fut = r.tick.as_mut().expect("a tick to drive");
+        let Some(result) = drive(fut) else {
+            // A step, or a call whose answer is held, which is a step too.
+            let wrote = WROTE.lock().unwrap();
+            if wrote.is_empty() {
+                return format!("{} waits", r.holder);
+            }
+            return format!("{} {wrote}", r.holder);
+        };
         r.tick = None;
-        Some(match result {
+        match result {
             Ok(t) => format!("{} ticks: {} done", r.holder, t.done),
             Err(e) => {
                 r.stopped = r.flaky.stopped();
                 format!("{} ticks: {e}", r.holder)
             }
-        })
+        }
     }
 
-    /// From here on nothing faults: every held answer comes, every runner
-    /// is replaced by a healthy one.
+    /// From here on nothing faults: every held answer comes, and every
+    /// runner stops where it is and is replaced by a healthy one.
     fn calm(&mut self) {
         self.outside.lock().unwrap().calm = true;
         for h in &self.outside.lock().unwrap().held {
             h.lock().unwrap().released = true;
         }
         for i in 0..RUNNERS {
-            self.resume(i);
             self.runners[i] = self.runner();
         }
     }
 
-    /// Past every lease, then a tick of every runner.
-    fn settle_round(&mut self) -> String {
-        self.clock.advance(61_000);
-        let ticks: Vec<String> = (0..RUNNERS).map(|i| self.tick(i)).collect();
-        format!("settle: clock +61000ms; {}", ticks.join(", "))
+    /// A step of settling: rounds of the clock moving past every lease,
+    /// then every runner's tick to its end, a step at a time.
+    fn settle_step(&mut self) -> String {
+        let Some(&i) = self.round.first() else {
+            self.clock.advance(61_000);
+            self.round = (0..RUNNERS).collect();
+            return "settle: clock +61000ms".into();
+        };
+        let event = self.tick(i);
+        if self.runners[i].tick.is_none() || event.ends_with(" waits") {
+            self.round.remove(0);
+        }
+        event
     }
 
     fn finished(&self, o: &Order) -> bool {
@@ -466,17 +501,18 @@ impl Sim {
         let outside = self.outside.lock().unwrap();
         let mut broken = None;
         let mut orders = Vec::new();
-        for (n, o) in self.orders.iter().enumerate() {
+        for o in &self.orders {
             let charged = outside.charged.get(&o.id).map_or(0, BTreeSet::len);
             let printed = *outside
                 .printed
                 .get(&step_key(o.receipt, "print"))
                 .unwrap_or(&0);
-            let paid = now(self.front.history(&StreamId::new("order", o.id)))
-                .map(|h| h.iter().filter(|e| e.kind == "OrderPaid").count())
-                .unwrap_or(0);
-            let checkout = self.process(o.checkout, "charge");
-            let receipt = self.process(o.receipt, "print");
+            let history =
+                now(self.front.history(&StreamId::new("order", o.id))).unwrap_or_default();
+            let count = |kind: &str| history.iter().filter(|e| e.kind == kind).count();
+            let (paid, cancelled) = (count("OrderPaid"), count("OrderCancelled"));
+            let checkout = self.process(o.checkout, "charge", &["charge", "find", "pay", "cancel"]);
+            let receipt = self.process(o.receipt, "print", &["print"]);
             let checks = [
                 ("charged_once", charged <= 1),
                 ("paid_once", paid <= 1),
@@ -493,6 +529,10 @@ impl Sim {
                     "failed_never_done",
                     !matches!(checkout.outcome, Some(Outcome::Failed(_))) || charged == 0,
                 ),
+                (
+                    "failed_never_done",
+                    !matches!(receipt.outcome, Some(Outcome::Failed(_))) || printed == 0,
+                ),
                 ("nothing_lost", checkout.kept && receipt.kept),
             ];
             if broken.is_none() {
@@ -502,12 +542,13 @@ impl Sim {
                     .map(|(name, _)| *name);
             }
             orders.push(json!({
-                "order": n,
+                "over": o.total > LIMIT,
                 "charged": charged,
                 "paid": paid,
+                "cancelled": cancelled,
                 "printed": printed,
-                "checkout": checkout.status,
-                "receipt": receipt.status,
+                "checkout": checkout.state,
+                "receipt": receipt.state,
             }));
         }
         let runners: Vec<Value> = self
@@ -542,52 +583,83 @@ impl Sim {
         self.front.now().0 - START.0
     }
 
-    /// How one process stands: its step's outcome, a short status, and
-    /// whether the store still keeps what will move it on.
-    fn process(&self, id: Uuid, step: &str) -> Standing {
+    /// How one process stands: its step's outcome, its state as the model
+    /// has it (each step's outcome, the call it waits on, how it ended, its
+    /// rows), and whether the store still keeps what will move it on.
+    fn process(&self, id: Uuid, step: &str, keys: &[&str]) -> Standing {
         let Ok(view) = now(self.front.process(id)) else {
             return Standing {
                 outcome: None,
-                status: "missing".into(),
+                state: Value::Null,
                 kept: false,
             };
         };
         let outcome = view.progress.outcome(step).cloned();
-        let steps: Vec<String> = view
-            .progress
-            .steps
+        let steps: serde_json::Map<String, Value> = keys
             .iter()
-            .map(|(k, o)| format!("{k}:{}", outcome_name(o)))
+            .map(|k| {
+                let o = view.progress.outcome(k).map_or("", outcome_name);
+                (k.to_string(), json!(o))
+            })
             .collect();
-        let mut status = steps.join(" ");
-        if let Some(f) = &view.finished {
-            let f = serde_json::to_value(f).unwrap_or(Value::Null);
-            let end = f.as_object().and_then(|m| m.keys().next().cloned());
-            status = format!("{status} -> {}", end.unwrap_or_default());
-        }
-        let kept = view.finished.is_some()
-            || self.row(WorkKind::Advance, id)
-            || matches!(&view.pending, Some((k, Step::Call { .. })) if self.row(WorkKind::Action, step_key(id, k)));
+        let pending = match &view.pending {
+            Some((k, Step::Call { .. })) => k.clone(),
+            _ => String::new(),
+        };
+        let end = match &view.finished {
+            Some(Finished::Completed(_)) => "completed",
+            Some(Finished::Failed(_)) => "failed",
+            Some(Finished::Stuck(_)) => "stuck",
+            None => "",
+        };
+        let advance = self.work(WorkKind::Advance, id);
+        let action = if pending.is_empty() {
+            None
+        } else {
+            self.work(WorkKind::Action, step_key(id, &pending))
+        };
+        let kept = view.finished.is_some() || advance.is_some() || action.is_some();
         Standing {
             outcome,
-            status: status.trim().to_string(),
+            state: json!({
+                "steps": steps,
+                "pending": pending,
+                "end": end,
+                "advance": row_state(advance.as_ref()),
+                "action": row_state(action.as_ref()),
+            }),
             kept,
         }
     }
 
-    fn row(&self, kind: WorkKind, id: Uuid) -> bool {
-        matches!(now(self.store.work(kind, id)), Ok(Some(_)))
+    fn work(&self, kind: WorkKind, id: Uuid) -> Option<Work> {
+        now(self.store.work(kind, id)).ok().flatten()
     }
 }
 
 struct Standing {
     outcome: Option<Outcome>,
-    status: String,
+    state: Value,
     kept: bool,
 }
 
+/// A work row as the model has it; one that is not there has every field
+/// false or 0.
+fn row_state(row: Option<&Work>) -> Value {
+    json!({
+        "exists": row.is_some(),
+        "held": row.is_some_and(|r| r.lease.is_some()),
+        "attempts": row.map_or(0, |r| r.attempts),
+        "taken_over": row.is_some_and(|r| r.taken_over),
+        "waiting": row.is_some_and(|r| r.due == Instant::NEVER),
+    })
+}
+
+/// A step's outcome in a word; an answer of nothing (`payment.find`
+/// finding no charge) is `none`.
 fn outcome_name(o: &Outcome) -> &'static str {
     match o {
+        Outcome::Ok(Value::Null) => "none",
         Outcome::Ok(_) => "ok",
         Outcome::Rejected(_) => "rejected",
         Outcome::Failed(_) => "failed",

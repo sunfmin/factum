@@ -1,0 +1,10 @@
+{
+  "tree": "fce2424b4af8badaef6170dd4a86395b515cae12+d1fba762150c532c",
+  "lines": 11,
+  "serves": "factum#31",
+  "considered": "Reusing the sim's existing per-tick loop and status string as the trace record (a tick is many model steps, so a record would not be one step); a second store wrapper for the pauses instead of Flaky's hook (17 delegations); a belief-state trace module instead of finer records.",
+  "reviewer": "codex:01a1fcd7-832f-7612-851a-18ef60360b22:default",
+  "author": "claude-code:efe9a11b-37e8-5b75-bb6d-cb2d77ba7ca9:opus",
+  "cut": "In crates/conformance/src/sim.rs, use the optional step label as the pause signal, share one pause path for immediate action replies, and count paid and cancelled events from a single history read per order. In models/ExactlyOnce.tla, share the row update between ClaimAdvance and ClaimAction, and remove Current and the stale branch in Ended because ClaimAction already removes superseded attempts from calls and Unseen covers their later no-ops.",
+  "answer": "Made: WROTE is the one pause signal (PAUSED gone), busy and at-once answers share one pause path, one history read per order, ClaimRows shared by both claims, Ended's stale branch gone. Kept Current, as a guard, not a branch: it is the renewal rule in CallOutside (dropping it is the broken variant failed_never_done fails on) and the lease guard of every write in Ended."
+}

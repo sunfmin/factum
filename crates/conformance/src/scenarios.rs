@@ -655,6 +655,36 @@ pub async fn a_retry_whose_lease_ran_out_meanwhile_changes_nothing<B: Backend>(b
     ));
 }
 
+pub async fn a_call_whose_lease_was_taken_over_is_not_made<B: Backend>(b: &B) {
+    let w = World::new(b);
+    let (a, flaky) = w.flaky("a");
+    // a claims both charges at once. While it records the first, both
+    // leases run out and b takes both charges and makes them.
+    let (other, clock) = (w.engine("b"), w.clock.clone());
+    flaky.race_on(
+        |u| records_step(u, "charge"),
+        Box::pin(async move {
+            clock.advance(30_000);
+            other.tick().await.unwrap();
+        }),
+    );
+    let (o1, p1) = checkout(&a, 500).await;
+    let (o2, p2) = checkout(&a, 600).await;
+    a.settle().await.unwrap();
+    assert_eq!(
+        w.payments.calls(),
+        3,
+        "a does not make its second call, under a lease b took over"
+    );
+    for (o, p) in [(o1, p1), (o2, p2)] {
+        assert!(matches!(
+            finished(&a, p).await,
+            Some(Finished::Completed(_))
+        ));
+        assert_eq!(count(&a, o, "OrderPaid").await, 1);
+    }
+}
+
 pub async fn two_runners_take_each_step_once<B: Backend>(b: &B) {
     let w = World::new(b);
     let (a, bb) = (w.engine("a"), w.engine("b"));

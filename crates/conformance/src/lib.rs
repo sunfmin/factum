@@ -161,6 +161,7 @@ macro_rules! suite {
             a_call_whose_lease_runs_out_on_every_attempt_ends_unknown,
             a_call_that_fails_for_now_is_tried_again_then_given_up,
             a_retry_whose_lease_ran_out_meanwhile_changes_nothing,
+            a_call_whose_lease_was_taken_over_is_not_made,
             two_runners_take_each_step_once,
             a_runner_that_dies_loses_its_process_to_another,
             starting_a_process_again,

@@ -444,12 +444,28 @@ impl<S: Store> Engine<S> {
         let retry = &def.policy.retry;
         let end = match retry.on_claim(row, call.at_most_once) {
             Attempt::End(outcome) => Err(outcome),
-            Attempt::Run => match (def.call)(row.id, call.params).await {
-                ActionAnswer::Done(v) => Err(Outcome::Ok(v)),
-                ActionAnswer::Rejected(r) => Err(Outcome::Rejected(r)),
-                ActionAnswer::Permanent(e) => Err(Outcome::Failed(e)),
-                ActionAnswer::Passing(e) => retry.after_failure(row, now, e),
-            },
+            Attempt::Run => {
+                // The call is made only under the claim's lease, renewed
+                // from the clock's now: one that ran out while earlier calls
+                // of the tick took their time may have been taken over, and
+                // a call made after the new holder's could land after that
+                // one recorded the step.
+                let lease = row.lease.expect("a claimed row has a lease");
+                let until = self.clock.now().plus(def.policy.timeout_ms);
+                if !self
+                    .store
+                    .renew(WorkKind::Action, row.id, lease, now, until)
+                    .await?
+                {
+                    return Ok(());
+                }
+                match (def.call)(row.id, call.params).await {
+                    ActionAnswer::Done(v) => Err(Outcome::Ok(v)),
+                    ActionAnswer::Rejected(r) => Err(Outcome::Rejected(r)),
+                    ActionAnswer::Permanent(e) => Err(Outcome::Failed(e)),
+                    ActionAnswer::Passing(e) => retry.after_failure(row, now, e),
+                }
+            }
         };
         self.end_attempt(row, end, &by, now).await?;
         Ok(())

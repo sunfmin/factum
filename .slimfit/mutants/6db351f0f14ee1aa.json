@@ -1,0 +1,6 @@
+{
+  "tree": "fce2424b4af8badaef6170dd4a86395b515cae12+d1fba762150c532c",
+  "picker": "codex:01a1fcdb-1656-77c2-934d-6a66d0fac01d:default",
+  "author": "claude-code:efe9a11b-37e8-5b75-bb6d-cb2d77ba7ca9:opus",
+  "none": "The checkout scenario requires three payment calls, which catches both the no-op and the inverted renewal guard because each suppresses calls under valid leases."
+}

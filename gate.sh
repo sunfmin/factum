@@ -25,3 +25,8 @@ slimfit check
 # The seeded simulation of the engine (truefit.toml): kept failing seeds
 # first, then 100 new ones, ~35s. A seed that fails is kept in .truefit/seeds/.
 truefit sim
+# The model of exactly-once and unknown (models/ExactlyOnce.tla), checked by
+# TLC within its bounds (~2s), and the simulation's runs as its traces:
+# seeds 1-10 and every kept seed (~25s).
+truefit model
+models/traces.sh
