@@ -1,0 +1,6 @@
+# truefit (`truefit --help`) runs factum's own seeded simulation of the
+# engine (crates/conformance/src/sim.rs) and keeps the seeds that fail.
+
+[sim]
+run = ["cargo", "run", "-q", "-p", "factum-conformance", "--bin", "sim", "--"] # truefit appends the seed
+seeds = 100

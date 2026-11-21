@@ -65,6 +65,7 @@ pub struct Flaky<S> {
     inner: Arc<S>,
     crash: Mutex<Option<Matches>>,
     fail: Mutex<Option<Call>>,
+    stop: Mutex<Option<u32>>,
     race: Mutex<Option<(Matches, BoxFuture<()>)>>,
     lose: Mutex<Option<Matches>>,
     batch_race: Mutex<Option<(String, BoxFuture<()>)>>,
@@ -76,6 +77,7 @@ impl<S: Store> Flaky<S> {
             inner,
             crash: Mutex::new(None),
             fail: Mutex::new(None),
+            stop: Mutex::new(None),
             race: Mutex::new(None),
             lose: Mutex::new(None),
             batch_race: Mutex::new(None),
@@ -98,7 +100,24 @@ impl<S: Store> Flaky<S> {
         self.fail.lock().unwrap().is_none()
     }
 
+    /// After `calls` more calls, every call fails, doing nothing: the
+    /// runner holding this handle has stopped, between any two of them.
+    pub fn stop_after(&self, calls: u32) {
+        *self.stop.lock().unwrap() = Some(calls);
+    }
+
+    /// Whether a runner cued with `stop_after` has stopped.
+    pub fn stopped(&self) -> bool {
+        *self.stop.lock().unwrap() == Some(0)
+    }
+
     fn cue(&self, call: Call) -> Result<()> {
+        if let Some(left) = self.stop.lock().unwrap().as_mut() {
+            if *left == 0 {
+                return Err(StoreError::Backend("the runner stopped".into()));
+            }
+            *left -= 1;
+        }
         let mut f = self.fail.lock().unwrap();
         if *f == Some(call) {
             *f = None;
