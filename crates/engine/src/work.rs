@@ -501,7 +501,7 @@ impl<S: Store> Engine<S> {
     async fn run_scheduled(&self, row: &Work, now: Instant) -> Result<(), Error> {
         let sub = Submission {
             command: row.name.clone(),
-            params: row.input().map_err(Error::Fault)?.clone(),
+            params: row.input().clone(),
             key: schedule_key(row.id),
             by: By::Schedule(row.id),
         };
@@ -563,7 +563,7 @@ impl<S: Store> Engine<S> {
                 self.end_attempt(&row, Err(outcome), &by, now).await?;
                 continue;
             }
-            let input = row.input().map_err(Error::Fault)?.clone();
+            let input = row.input().clone();
             return Ok(Some(ClaimedTask {
                 id: row.id,
                 task_type: row.name,
