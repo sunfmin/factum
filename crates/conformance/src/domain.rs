@@ -1,7 +1,7 @@
 //! A small shop, declared the way a program declares its business: the
 //! domain every scenario runs.
 
-use std::collections::HashSet;
+use std::collections::HashMap;
 use std::sync::Mutex;
 use std::sync::atomic::{AtomicU32, Ordering};
 
@@ -429,14 +429,14 @@ impl Process for CheckoutProcess {
                 "payment.charge",
                 json!({ "order": i.order, "amount": i.total }),
             ),
-            Some(Outcome::Ok(charge)) => match p.outcome("pay") {
-                None => Next::run(
-                    "pay",
-                    "order.pay",
-                    json!({ "order": i.order, "charge": charge }),
-                ),
-                Some(Outcome::Ok(_)) => Next::complete(json!({ "charged": charge })),
-                Some(other) => Next::stuck(format!("charged but not paid: {other:?}")),
+            Some(Outcome::Ok(charge)) => pay(i, p, charge),
+            // Whether it was charged is not known: the payment system is
+            // asked, and its answer decides.
+            Some(Outcome::Unknown(_)) => match p.outcome("find") {
+                None => Next::call("find", "payment.find", json!({ "order": i.order })),
+                Some(Outcome::Ok(Value::Null)) => Next::fail("charge: not charged"),
+                Some(Outcome::Ok(charge)) => pay(i, p, charge),
+                Some(other) => Next::stuck(format!("may have been charged: {other:?}")),
             },
             Some(Outcome::Rejected(r)) => match p.outcome("cancel") {
                 None => Next::run(
@@ -451,6 +451,19 @@ impl Process for CheckoutProcess {
     }
 }
 
+/// Pays the order a charge was made for.
+fn pay(i: &Checkout, p: &Progress, charge: &Value) -> Next {
+    match p.outcome("pay") {
+        None => Next::run(
+            "pay",
+            "order.pay",
+            json!({ "order": i.order, "charge": charge }),
+        ),
+        Some(Outcome::Ok(_)) => Next::complete(json!({ "charged": charge })),
+        Some(other) => Next::stuck(format!("charged but not paid: {other:?}")),
+    }
+}
+
 pub struct ReceiptProcess;
 
 impl Process for ReceiptProcess {
@@ -460,7 +473,7 @@ impl Process for ReceiptProcess {
         match p.outcome("print") {
             None => Next::call_at_most_once("print", "printer.print", json!({ "order": i.order })),
             Some(Outcome::Ok(_)) => Next::complete(json!("printed")),
-            Some(Outcome::Unknown) => Next::stuck("the printer may or may not have printed"),
+            Some(Outcome::Unknown(_)) => Next::stuck("the printer may or may not have printed"),
             Some(other) => Next::fail(format!("{other:?}")),
         }
     }
@@ -529,7 +542,7 @@ fn task_outcome(p: &Progress, queue: impl FnOnce() -> Next, key: &str) -> Next {
     match p.outcome(key) {
         None => queue(),
         Some(Outcome::Ok(v)) => Next::complete(v.clone()),
-        Some(Outcome::Unknown) => Next::stuck("unknown"),
+        Some(Outcome::Unknown(_)) => Next::stuck("unknown"),
         Some(Outcome::Cancelled) => Next::fail("cancelled"),
         Some(other) => Next::fail(format!("{other:?}")),
     }
@@ -585,11 +598,13 @@ impl Process for PickupProcess {
 
 // ---- other systems, stood in for ----
 
-/// A payment service that charges once per idempotency key.
+/// A payment service that charges once per idempotency key, and answers
+/// which charge an order has.
 #[derive(Default)]
 pub struct Payments {
     pub calls: AtomicU32,
-    pub charged: Mutex<HashSet<Uuid>>,
+    /// Each charge's key, and the order it is for.
+    pub charged: Mutex<HashMap<Uuid, Value>>,
     /// Answer "try later" this many more times.
     pub busy: AtomicU32,
 }
@@ -607,8 +622,16 @@ impl Payments {
         if params["amount"].as_i64().unwrap_or(0) > LIMIT {
             return ActionAnswer::Rejected(Rejection::new("declined", "over the limit"));
         }
-        self.charged.lock().unwrap().insert(key);
+        let order = params["order"].clone();
+        self.charged.lock().unwrap().insert(key, order);
         ActionAnswer::Done(json!({ "charge": key }))
+    }
+
+    /// The charge made for the order, or null.
+    fn find(&self, params: &Value) -> ActionAnswer {
+        let charged = self.charged.lock().unwrap();
+        let key = charged.iter().find(|(_, o)| **o == params["order"]);
+        ActionAnswer::Done(key.map_or(Value::Null, |(k, _)| json!({ "charge": k })))
     }
 
     pub fn charges(&self) -> usize {
@@ -764,8 +787,15 @@ pub fn shop(
         .process::<DeliveryProcess>()
         .process::<PickupProcess>()
         .process::<LabelProcess>()
-        .action("payment.charge", charge_policy(), move |key, params| {
-            let answer = payments.charge(key, &params);
+        .action("payment.charge", charge_policy(), {
+            let payments = payments.clone();
+            move |key, params| {
+                let answer = payments.charge(key, &params);
+                async move { answer }
+            }
+        })
+        .action("payment.find", charge_policy(), move |_, params| {
+            let answer = payments.find(&params);
             async move { answer }
         })
         .action("printer.print", ActionPolicy::default(), move |_, _| {
