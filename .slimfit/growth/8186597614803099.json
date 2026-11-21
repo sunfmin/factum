@@ -1,0 +1,10 @@
+{
+  "tree": "ea25b8b6de0295d13a8a2ece8c9403ca32ab4be0+d1fba762150c532c",
+  "lines": 4,
+  "serves": "factum#30",
+  "considered": "Reusing a_call_that_fails_for_now_is_tried_again_then_given_up for the Failed half instead of a second checkout; deleting the old Failed scenario (replaced, not added beside); Checkout's pay arm shared by charge and find through one fn pay.",
+  "reviewer": "codex:01a1fcaf-5905-7c90-af1f-40c5e19bcbe1:default",
+  "author": "claude-code:413e5bcf-2b38-57be-9eda-89047210b6ac:opus",
+  "cut": "In crates/conformance/src/scenarios.rs and crates/conformance/src/lib.rs, keep the lease-expiry scenario focused on Unknown and successful reconciliation, and reuse a_call_that_fails_for_now_is_tried_again_then_given_up for the final answered-error assertions. In crates/core/src/model.rs, select the diagnostic suffix for each terminal takeover case and construct Outcome::Unknown once, preserving both messages.",
+  "answer": "Both made: the scenario's answered-error half is removed and points at a_call_that_fails_for_now_is_tried_again_then_given_up; on_claim picks a suffix and builds Outcome::Unknown once with both messages kept."
+}
