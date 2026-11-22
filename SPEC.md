@@ -132,6 +132,18 @@ makes commit order the sequence order, and Postgres will need an
 appending-transaction horizon and `SKIP LOCKED` claims. Those details stay
 inside each store.
 
+**A store's file stays near the size of what it holds.** SQLite's file
+uses incremental `auto_vacuum`: a new file from its first table, a file
+written before factum#44 by one `VACUUM` at open, before the store serves
+anyone, which says on stderr how long it took (0.78s for factorium's host,
+389 MB to 40.5 MB, with a fresh `VACUUM INTO` of the same data 40.7 MB). A
+`VACUUM` another connection blocks is left to the next open. Then, once a
+write leaves more than 256 free pages (a schema step's deletes, or work
+rows gone), the writer gives back up to 1,024 of them in a write of its
+own, right after its commit: 28 ms on that host, far inside the 10 s
+another writer waits for the lock. The WAL is cut back to 64 MiB after a
+checkpoint (`journal_size_limit`).
+
 ## 4. Tests: only at the outermost layer
 
 Every test drives the engine's public API, as a program would: submit,

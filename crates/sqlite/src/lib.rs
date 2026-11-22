@@ -171,7 +171,11 @@ fn add_column(tx: &Transaction, table: &str, column: &str, def: &str) -> rusqlit
 fn migrate(conn: &mut Connection) -> Result<()> {
     let known = STEPS.len() as u32;
     let found = (|| -> rusqlite::Result<u32> {
-        conn.execute_batch("PRAGMA journal_mode = WAL;")?;
+        // A new file is incremental from its first table; an older one is
+        // made so by `make_incremental`.
+        conn.execute_batch(
+            "PRAGMA auto_vacuum = INCREMENTAL; PRAGMA journal_mode = WAL; PRAGMA journal_size_limit = 67108864;",
+        )?;
         let tx = conn.transaction_with_behavior(TransactionBehavior::Immediate)?;
         let found: u32 = tx.query_row("PRAGMA user_version", [], |r| r.get(0))?;
         if found <= known {
@@ -188,6 +192,56 @@ fn migrate(conn: &mut Connection) -> Result<()> {
         Err(StoreError::NewerSchema { found, known })
     } else {
         Ok(())
+    }
+}
+
+/// Pages one step gives back (`incremental_vacuum`): 4 MiB of 4 KiB pages,
+/// tens of milliseconds on factorium's host, far inside the busy timeout a
+/// waiting writer has.
+const STEP: i64 = 1024;
+/// Free pages a file may hold before a write gives some back: below it,
+/// they are reused, not moved.
+const SLACK: i64 = 256;
+
+/// Switches a file written before factum#44 to incremental `auto_vacuum`,
+/// which takes one full `VACUUM`. It runs at open, before the store serves
+/// anyone, and says how long it took. If it cannot (another connection is
+/// reading), the file stays as it is and the next open tries again.
+fn make_incremental(conn: &Connection, path: &Path) {
+    let mode = conn.query_row("PRAGMA auto_vacuum", [], |r| r.get::<_, i64>(0));
+    if !matches!(mode, Ok(0) | Ok(1)) {
+        return;
+    }
+    let size = || std::fs::metadata(path).map(|m| m.len() >> 20).unwrap_or(0);
+    let (before, began) = (size(), std::time::Instant::now());
+    let done = conn.execute_batch("PRAGMA auto_vacuum = INCREMENTAL; VACUUM;");
+    let took = began.elapsed().as_secs_f64();
+    let path = path.display();
+    match done {
+        Ok(()) => eprintln!(
+            "factum-sqlite: {path}: auto_vacuum made incremental by VACUUM in {took:.2}s, {before} MiB -> {} MiB",
+            size()
+        ),
+        Err(e) => eprintln!(
+            "factum-sqlite: {path}: VACUUM to make auto_vacuum incremental failed after {took:.2}s, next open tries again: {e}"
+        ),
+    }
+}
+
+/// Gives back one step of free pages, each step its own short write, once
+/// the file holds more than `SLACK`. It only frees space, so a step that
+/// fails (another writer held the file past the busy timeout) is left to the
+/// next write.
+fn give_back(conn: &Connection) {
+    let free = conn.query_row("PRAGMA freelist_count", [], |r| r.get::<_, i64>(0));
+    if free.is_ok_and(|n| n > SLACK) {
+        // It answers a row for each page it frees, and frees one per row read.
+        let _ = (|| -> rusqlite::Result<()> {
+            let mut step = conn.prepare(&format!("PRAGMA incremental_vacuum({STEP})"))?;
+            let mut pages = step.query([])?;
+            while pages.next()?.is_some() {}
+            Ok(())
+        })();
     }
 }
 
@@ -220,6 +274,7 @@ impl SqliteStore {
         conn.busy_timeout(Duration::from_secs(10))
             .map_err(backend)?;
         migrate(&mut conn)?;
+        make_incremental(&conn, path.as_ref());
         Ok(SqliteStore {
             worker: Worker::start(conn).map_err(backend)?,
             path: path.as_ref().to_path_buf(),
@@ -252,6 +307,7 @@ impl SqliteStore {
                 .map_err(backend)?;
             let out = f(&tx)?;
             tx.commit().map_err(backend)?;
+            give_back(conn);
             Ok(out)
         })
         .await

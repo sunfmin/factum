@@ -291,6 +291,79 @@ async fn copies_answer_the_same_once_opened(version: u32) {
     );
 }
 
+/// Rows enough for 2,500 or so pages, for a schema step to delete.
+const MANY_ANSWERS: &str =
+    "WITH RECURSIVE n(i) AS (SELECT 1 UNION ALL SELECT i + 1 FROM n WHERE i < 4000)
+    INSERT INTO answers SELECT 'k' || i, json_object('pad', hex(randomblob(1000))) FROM n;";
+
+/// The file's `auto_vacuum`, its pages and its free pages.
+fn pages(path: &Path) -> (i64, i64, i64) {
+    let conn = Connection::open(path).unwrap();
+    let get = |p: &str| {
+        conn.query_row(&format!("PRAGMA {p}"), [], |r| r.get(0))
+            .unwrap()
+    };
+    (get("auto_vacuum"), get("page_count"), get("freelist_count"))
+}
+
+/// factum#44: a file written before it is made incremental once, at open,
+/// by the one VACUUM that takes, which leaves none of a step's deletes.
+#[test]
+fn a_file_written_before_44_is_vacuumed_once_at_open() {
+    let path = old_database(MANY_ANSWERS);
+    let (mode, before, _) = pages(&path);
+    assert!(mode == 0 && before > 2000, "{mode} {before}");
+    drop(SqliteStore::open(&path).unwrap());
+    let (mode, after, free) = pages(&path);
+    assert_eq!((mode, free), (2, 0), "incremental, no free page");
+    assert!(after < 100, "{after} pages left of {before}");
+}
+
+/// factum#44: what a schema step deletes in an incremental file is given
+/// back in steps, one after a write, while the writes go on.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn pages_a_step_frees_are_given_back_while_writes_go_on() {
+    let w = World::new(&Sqlite);
+    let path = w.store.path().to_path_buf();
+    // Back to schema 6, with the answers step 7 drops.
+    let conn = Connection::open(&path).unwrap();
+    conn.execute_batch(&format!(
+        "CREATE TABLE answers (key TEXT PRIMARY KEY, answer TEXT NOT NULL);
+         {MANY_ANSWERS} PRAGMA user_version = 6;"
+    ))
+    .unwrap();
+    drop(conn);
+    let (mode, before, _) = pages(&path);
+    assert!(mode == 2 && before > 2000, "{mode} {before}");
+    drop(SqliteStore::open(&path).unwrap());
+    let (_, _, freed) = pages(&path);
+    assert!(freed > 2000, "step 7 freed {freed} pages");
+    let e = w.engine("a");
+    let mut free = freed;
+    for _ in 0..4 {
+        let order = json!({ "order": factum_conformance::id(), "total": 5 });
+        assert!(
+            !e.submit(sub("order.place", order))
+                .await
+                .unwrap()
+                .events
+                .is_empty()
+        );
+        let (_, _, now) = pages(&path);
+        assert!(
+            now <= (free - 1000).max(256),
+            "{now} free after a write, {free} before"
+        );
+        free = now;
+    }
+    drop((e, w));
+    let (_, after, free) = pages(&path);
+    assert!(
+        free <= 256 && after < before - 2000,
+        "{after} pages ({free} free) of {before}"
+    );
+}
+
 #[test]
 fn a_database_of_a_newer_schema_is_refused_at_open() {
     let path = new_path();
