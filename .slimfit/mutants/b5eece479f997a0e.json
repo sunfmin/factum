@@ -1,0 +1,6 @@
+{
+  "tree": "7e6ad99cefe846a1153772b754aeca35f0410fde+d1fba762150c532c",
+  "picker": "codex:01a2039f-1c95-7a91-860f-25913b832177:default",
+  "author": "claude-code:e85480df-b65e-5e5a-a1f7-4401c26e6fc3:opus",
+  "none": "The new conformance tests cover both guard mutations: external empty answers must leave the key reusable, recurring empty answers must retain it, and eventful submissions must still write events. A default-only return would also fail the event assertions if it compiled."
+}

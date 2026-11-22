@@ -106,6 +106,10 @@ const STEPS: &[fn(&Transaction) -> rusqlite::Result<()>] = &[
     // factum#40: an applied answer is read from its events by key, not kept
     // as a copy; only its fingerprint and stream, or a refusal, are kept.
     |tx| tx.execute_batch(ANSWERS_READ_BY_KEY),
+    // factum#41: an answer that wrote no events keeps nothing for its key
+    // any more. A runner's such row goes too: at worst a recurring command
+    // runs once more in the period this opens in.
+    |tx| tx.execute_batch("DELETE FROM answers WHERE json_type(answer, '$.result.Ok') = 'null'"),
 ];
 
 /// Each answer becomes the `Kept` it stands for, as JSON.

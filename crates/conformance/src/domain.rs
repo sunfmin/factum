@@ -235,6 +235,30 @@ impl Command for CloseAndRemind {
     }
 }
 
+/// Pays an order once it is placed; until then it applies and records
+/// nothing.
+pub struct PayWhenPlaced;
+
+impl Command for PayWhenPlaced {
+    const NAME: &'static str = "order.pay_when_placed";
+    type Aggregate = Orders;
+    type Params = Pay;
+    fn stream(p: &Pay) -> Uuid {
+        p.order
+    }
+    fn decide(
+        s: &Order,
+        p: &Pay,
+        by: &By,
+        now: Instant,
+    ) -> Result<Decision<OrderEvent>, Rejection> {
+        if s.status != "placed" {
+            return Ok(Vec::new().into());
+        }
+        PayOrder::decide(s, p, by, now)
+    }
+}
+
 fn placed(s: &Order) -> Result<(), Rejection> {
     if s.status == "placed" {
         Ok(())
@@ -775,6 +799,7 @@ pub fn shop(
     let mut model = Model::new()
         .command::<PlaceOrder>()
         .command::<PayOrder>()
+        .command::<PayWhenPlaced>()
         .command::<CancelOrder>()
         .command::<ExpireOrder>()
         .command::<CloseOrder>()
