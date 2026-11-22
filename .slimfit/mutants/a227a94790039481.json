@@ -1,0 +1,6 @@
+{
+  "tree": "6f01cb2b77ce4b24d7afae7dcdc3bf291d05ad8c+d1fba762150c532c",
+  "picker": "codex:01a203d4-be48-70d0-a75c-bdda660d198d:default",
+  "author": "claude-code:562281e8-7d8b-5dfa-87d1-aa7612273511:opus",
+  "none": "The conformance tests require schema migration, legacy file conversion to incremental auto-vacuum, and reclamation of at least 1,000 free pages per write while that many remain, covering every buildable candidate."
+}
