@@ -351,7 +351,7 @@ async fn pages_a_step_frees_are_given_back_while_writes_go_on() {
         );
         let (_, _, now) = pages(&path);
         assert!(
-            now <= (free - 1000).max(256),
+            now <= (free - 1000).max(0),
             "{now} free after a write, {free} before"
         );
         free = now;
@@ -359,7 +359,7 @@ async fn pages_a_step_frees_are_given_back_while_writes_go_on() {
     drop((e, w));
     let (_, after, free) = pages(&path);
     assert!(
-        free <= 256 && after < before - 2000,
+        free == 0 && after < before - 2000,
         "{after} pages ({free} free) of {before}"
     );
 }
