@@ -98,6 +98,12 @@ const STEPS: &[fn(&Transaction) -> rusqlite::Result<()>] = &[
     |tx| tx.execute_batch(FIRST),
     // factum#14. Some hosts had it added by hand before this step existed.
     |tx| add_column(tx, "work", "taken_over", "INTEGER NOT NULL DEFAULT 0"),
+    // factum#39: a refusal keeps nothing for its key any more.
+    |tx| {
+        tx.execute_batch(
+            "DELETE FROM answers WHERE json_extract(answer, '$.result.Rejected') IS NOT NULL",
+        )
+    },
 ];
 
 fn add_column(tx: &Transaction, table: &str, column: &str, def: &str) -> rusqlite::Result<()> {

@@ -135,7 +135,7 @@ impl<S: Store> Engine<S> {
                         key: step_key(id, &key),
                         by: by.clone(),
                     };
-                    let outcome = match self.submit_at(sub, now).await {
+                    let outcome = match self.submit_at(sub, now, true).await {
                         Ok(applied) => Outcome::Ok(Value::Array(
                             applied.events.iter().map(event_json).collect(),
                         )),
@@ -494,7 +494,7 @@ impl<S: Store> Engine<S> {
                 key,
                 by: By::Recurring(r.name.clone()),
             };
-            let ran = match self.submit_at(sub, now).await {
+            let ran = match self.submit_at(sub, now, true).await {
                 Ok(_) | Err(Error::Rejected(_)) => Ok(()),
                 Err(e) => Err(e),
             };
@@ -514,7 +514,7 @@ impl<S: Store> Engine<S> {
             key: schedule_key(row.id),
             by: By::Schedule(row.id),
         };
-        let outcome = match self.submit_at(sub, now).await {
+        let outcome = match self.submit_at(sub, now, true).await {
             Ok(_) => json!({ "ok": true }),
             Err(Error::Rejected(r)) => json!({ "ok": false, "rejection": r }),
             Err(e) => return Err(e),

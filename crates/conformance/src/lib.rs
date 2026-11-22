@@ -94,14 +94,18 @@ impl<'a, B: Backend> World<'a, B> {
 
     /// A runner whose store crashes or races on cue.
     pub fn flaky(&self, holder: &str) -> FlakyRunner<B::S> {
+        self.flaky_of(self.model.clone(), holder)
+    }
+
+    /// A runner of another model whose store crashes or races on cue.
+    pub fn flaky_with(&self, model: Model, holder: &str) -> FlakyRunner<B::S> {
+        self.flaky_of(Arc::new(model), holder)
+    }
+
+    fn flaky_of(&self, model: Arc<Model>, holder: &str) -> FlakyRunner<B::S> {
         let flaky = Arc::new(Flaky::new(self.backend.reopen(&self.store)));
         (
-            Engine::new(
-                flaky.clone(),
-                self.model.clone(),
-                self.clock.clone(),
-                holder,
-            ),
+            Engine::new(flaky.clone(), model, self.clock.clone(), holder),
             flaky,
         )
     }
@@ -142,6 +146,7 @@ macro_rules! suite {
             commands_record_and_fold,
             unknown_commands_and_bad_params_are_refused,
             a_key_replays_its_first_answer_and_refuses_reuse,
+            a_refusal_keeps_nothing_and_a_resend_decides_again,
             a_fault_is_no_answer_and_the_key_decides_again,
             a_refusal_that_loses_its_key_answers_what_the_key_holds,
             a_plan_records_nothing,
@@ -153,6 +158,7 @@ macro_rules! suite {
             a_scheduled_command_runs_once_when_due,
             a_refused_scheduled_command_is_recorded_not_retried,
             a_recurring_command_runs_once_per_period,
+            a_refused_recurring_command_runs_once_per_period,
             a_process_runs_to_completion,
             a_refused_step_is_compensated,
             a_step_run_but_not_recorded_is_replayed_not_repeated,
