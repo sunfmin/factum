@@ -1,0 +1,45 @@
+{
+  "tip": "425cb72d84c0d933fc0c30e1378a6a6660c81dae",
+  "from": "f7493deeae9d03101ec711c84bf950b655015da9",
+  "pool": 11,
+  "drawn": {
+    "rust": [
+      {
+        "name": "crates/core/src/model.rs:184:32: replace > with == in RetryPolicy::on_claim",
+        "outcome": "killed"
+      },
+      {
+        "name": "crates/engine/src/work.rs:562:9: replace Engine<S>::claim_task -> Result<Option<ClaimedTask>, Error> with Ok(Some(Default::default()))",
+        "outcome": "unviable"
+      },
+      {
+        "name": "crates/engine/src/work.rs:442:9: replace Engine<S>::deliver_one -> Result<(), Error> with Ok(())",
+        "outcome": "killed"
+      },
+      {
+        "name": "crates/core/src/model.rs:180:9: replace RetryPolicy::on_claim -> Attempt with Default::default()",
+        "outcome": "unviable"
+      },
+      {
+        "name": "crates/core/src/model.rs:180:22: delete ! in RetryPolicy::on_claim",
+        "outcome": "killed"
+      },
+      {
+        "name": "crates/engine/src/work.rs:562:9: replace Engine<S>::claim_task -> Result<Option<ClaimedTask>, Error> with Ok(None)",
+        "outcome": "killed"
+      },
+      {
+        "name": "crates/core/src/work.rs:150:9: replace Work::wait -> Result<Wait, String> with Ok(Default::default())",
+        "outcome": "unviable"
+      },
+      {
+        "name": "crates/core/src/work.rs:145:9: replace Work::call -> Result<Call, String> with Ok(Default::default())",
+        "outcome": "unviable"
+      },
+      {
+        "name": "crates/core/src/model.rs:184:32: replace > with < in RetryPolicy::on_claim",
+        "outcome": "killed"
+      }
+    ]
+  }
+}
