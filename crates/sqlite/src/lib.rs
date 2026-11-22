@@ -171,7 +171,11 @@ fn add_column(tx: &Transaction, table: &str, column: &str, def: &str) -> rusqlit
 fn migrate(conn: &mut Connection) -> Result<()> {
     let known = STEPS.len() as u32;
     let found = (|| -> rusqlite::Result<u32> {
-        conn.execute_batch("PRAGMA journal_mode = WAL;")?;
+        // A new file is incremental from its first table; an older one is
+        // made so by `make_incremental`.
+        conn.execute_batch(
+            "PRAGMA auto_vacuum = INCREMENTAL; PRAGMA journal_mode = WAL; PRAGMA journal_size_limit = 67108864;",
+        )?;
         let tx = conn.transaction_with_behavior(TransactionBehavior::Immediate)?;
         let found: u32 = tx.query_row("PRAGMA user_version", [], |r| r.get(0))?;
         if found <= known {
@@ -189,6 +193,40 @@ fn migrate(conn: &mut Connection) -> Result<()> {
     } else {
         Ok(())
     }
+}
+
+/// Pages one step gives back (`incremental_vacuum`): 4 MiB of 4 KiB pages,
+/// 28 ms on factorium's host, far inside the busy timeout a waiting writer
+/// has; with none free, 20 µs.
+const STEP: i64 = 1024;
+
+/// Switches a file written before factum#44 to incremental `auto_vacuum`,
+/// which takes one full `VACUUM`. It runs at open, before the store serves
+/// anyone, and says how long it took.
+fn make_incremental(conn: &Connection, path: &Path) -> rusqlite::Result<()> {
+    if conn.query_row("PRAGMA auto_vacuum", [], |r| r.get::<_, i64>(0))? != 2 {
+        let began = std::time::Instant::now();
+        conn.execute_batch("PRAGMA auto_vacuum = INCREMENTAL; VACUUM;")?;
+        let took = began.elapsed().as_secs_f64();
+        eprintln!(
+            "factum-sqlite: {}: auto_vacuum made incremental by VACUUM in {took:.2}s",
+            path.display()
+        );
+    }
+    Ok(())
+}
+
+/// Gives back up to `STEP` free pages, its own short write. It only frees
+/// space, so a step that fails (another writer held the file past the busy
+/// timeout) is left to the next write.
+fn give_back(conn: &Connection) {
+    // It answers a row for each page it frees, and frees one per row read.
+    let _ = (|| -> rusqlite::Result<()> {
+        let mut step = conn.prepare(&format!("PRAGMA incremental_vacuum({STEP})"))?;
+        let mut pages = step.query([])?;
+        while pages.next()?.is_some() {}
+        Ok(())
+    })();
 }
 
 pub struct SqliteStore {
@@ -220,6 +258,7 @@ impl SqliteStore {
         conn.busy_timeout(Duration::from_secs(10))
             .map_err(backend)?;
         migrate(&mut conn)?;
+        make_incremental(&conn, path.as_ref()).map_err(backend)?;
         Ok(SqliteStore {
             worker: Worker::start(conn).map_err(backend)?,
             path: path.as_ref().to_path_buf(),
@@ -252,6 +291,7 @@ impl SqliteStore {
                 .map_err(backend)?;
             let out = f(&tx)?;
             tx.commit().map_err(backend)?;
+            give_back(conn);
             Ok(out)
         })
         .await
