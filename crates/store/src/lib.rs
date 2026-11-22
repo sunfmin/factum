@@ -95,15 +95,17 @@ impl Kept {
         }
     }
 
-    /// The answer, given the events its stream holds under the key.
-    pub fn answer(self, events: Vec<Event>) -> Answer {
-        Answer {
+    /// The answer, reading the events its stream holds under the key.
+    pub fn answer(self, events: impl FnOnce(&StreamId) -> Result<Vec<Event>>) -> Result<Answer> {
+        let result = match self.result {
+            Ok(Some(stream)) => AnswerResult::Applied(events(&stream)?),
+            Ok(None) => AnswerResult::Applied(Vec::new()),
+            Err(r) => AnswerResult::Rejected(r),
+        };
+        Ok(Answer {
             fingerprint: self.fingerprint,
-            result: match self.result {
-                Ok(_) => AnswerResult::Applied(events),
-                Err(r) => AnswerResult::Rejected(r),
-            },
-        }
+            result,
+        })
     }
 }
 

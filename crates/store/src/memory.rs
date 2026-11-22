@@ -158,17 +158,16 @@ impl Store for MemoryStore {
 
     async fn answer(&self, key: Uuid) -> Result<Option<Answer>> {
         let inner = self.lock();
-        Ok(inner.answers.get(&key).cloned().map(|kept| {
-            let events = match &kept.result {
-                Ok(Some(stream)) => inner.streams[stream]
-                    .iter()
-                    .filter(|e| e.meta.key == Some(key))
-                    .cloned()
-                    .collect(),
-                _ => Vec::new(),
-            };
-            kept.answer(events)
-        }))
+        let of_key = |s: &StreamId| {
+            let events = inner.streams[s].iter().filter(|e| e.meta.key == Some(key));
+            Ok(events.cloned().collect())
+        };
+        inner
+            .answers
+            .get(&key)
+            .cloned()
+            .map(|k| k.answer(of_key))
+            .transpose()
     }
 
     async fn commit(&self, unit: Unit) -> Result<Vec<Event>> {

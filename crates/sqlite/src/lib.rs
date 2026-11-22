@@ -19,8 +19,8 @@ use std::path::{Path, PathBuf};
 use std::time::Duration;
 
 use factum_core::{
-    Event, Instant, Meta, Position, Query, RowOp, StreamId, Table, Uuid, Value, Version, Work,
-    WorkChange, WorkKind,
+    Event, Instant, Meta, Position, Query, Rejection, RowOp, StreamId, Table, Uuid, Value, Version,
+    Work, WorkChange, WorkKind,
 };
 use factum_store::{
     Answer, Batch, Checkpoint, Claim, DeadLetter, Kept, Result, Snapshot, Store, StoreError, Unit,
@@ -561,32 +561,19 @@ impl Store for SqliteStore {
     async fn answer(&self, key: Uuid) -> Result<Option<Answer>> {
         self.run(move |c| {
             let key = key.to_string();
-            let found: Option<(String, Option<String>, Option<String>)> = c
-                .query_row(
-                    "SELECT fingerprint, stream, rejection FROM answers WHERE key = ?1",
-                    [&key],
-                    |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
-                )
-                .optional()
-                .map_err(backend)?;
+            let sql = "SELECT fingerprint, stream, rejection FROM answers WHERE key = ?1";
+            let row = |r: &Row| Ok((r.get::<_, String>(0)?, r.get::<_, Option<String>>(1)?, r.get::<_, Option<String>>(2)?));
+            let found = c.query_row(sql, [&key], row).optional().map_err(backend)?;
             let Some((fingerprint, stream, rejection)) = found else {
                 return Ok(None);
             };
-            let kept = Kept {
-                fingerprint: uuid(&fingerprint)?,
-                result: match rejection {
-                    Some(r) => Err(parse(&r)?),
-                    None => Ok(None),
-                },
+            let result = match rejection {
+                Some(r) => Err(parse::<Rejection>(&r)?),
+                None => Ok(stream.map(StreamId::try_from).transpose().map_err(backend)?),
             };
-            let events = match stream {
-                Some(stream) if kept.result.is_ok() => {
-                    let sql = format!("SELECT {EVENT_COLUMNS} FROM events INDEXED BY events_key WHERE json_extract(meta, '$.key') = ?1 AND stream = ?2 ORDER BY version");
-                    events(c, &sql, params![key, stream])?
-                }
-                _ => Vec::new(),
-            };
-            Ok(Some(kept.answer(events)))
+            let kept = Kept { fingerprint: uuid(&fingerprint)?, result };
+            let sql = format!("SELECT {EVENT_COLUMNS} FROM events INDEXED BY events_key WHERE json_extract(meta, '$.key') = ?1 AND stream = ?2 ORDER BY version");
+            kept.answer(|s| events(c, &sql, params![key, s.to_string()])).map(Some)
         })
         .await
     }
