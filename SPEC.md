@@ -83,10 +83,15 @@ short transaction; none holds a lock while the caller works.
   events, in commit order: no later commit lands before the last returned.
   An `after` past the stream's end reads nothing.
 - `commit(unit)` — events appended to streams at the versions their writer
-  read, the submission's key and answer (kept with the events' positions),
-  the work changes the events imply, and lease guards. All of it or none:
-  `Conflict`, `KeyTaken` or `LeaseLost` otherwise.
-- `answer(key)`.
+  read, the submission's key and answer, the work changes the events
+  imply, and lease guards. All of it or none: `Conflict`, `KeyTaken` or
+  `LeaseLost` otherwise.
+- `answer(key)` — an applied answer is read from the log: the events of
+  its stream whose meta carries the key, as committed (with positions),
+  found by an index on the key. Beside them a key keeps only what they
+  cannot give: the fingerprint, the stream (the engine's `ScheduleRan`
+  carries its key in another), or a runner's kept refusal. An event is
+  never kept twice.
 - `claim(kind, names, now, holder, lease, limit)` — due rows no live lease
   holds, oldest due first; of rows sharing a name and ordering key only the
   first put, and not before its pace. A claim takes a new lease, counts an

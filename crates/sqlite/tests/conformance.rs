@@ -8,10 +8,13 @@ use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
 
-use factum::StoreError;
-use factum_conformance::Backend;
+use factum::{Rejection, Store, StoreError, StreamId, Uuid};
+use factum_conformance::{Backend, World, sub};
+use factum_core::{fingerprint, schedule_key};
 use factum_sqlite::SqliteStore;
+use factum_store::{Answer, AnswerResult};
 use rusqlite::Connection;
+use serde_json::json;
 
 /// The schema before factum#14, as released.
 const BEFORE_14: &str = "
@@ -100,7 +103,7 @@ fn shape(path: &Path) -> Vec<String> {
              FROM sqlite_master m, pragma_table_info(m.name) p
              WHERE m.type = 'table' AND m.name <> 'sqlite_sequence' GROUP BY m.name
              UNION ALL
-             SELECT m.type || ' ' || m.name || ' on ' || m.tbl_name || ': ' || group_concat(i.name, ', ')
+             SELECT m.type || ' ' || m.name || ' on ' || m.tbl_name || ': ' || group_concat(ifnull(i.name, m.sql), ', ')
              FROM sqlite_master m, pragma_index_info(m.name) i
              WHERE m.type = 'index' GROUP BY m.name
              UNION ALL
@@ -126,18 +129,22 @@ fn an_old_database_is_brought_to_the_schema_a_new_one_has() {
 }
 
 #[test]
-fn a_database_given_taken_over_by_hand_opens_unchanged() {
+fn a_database_given_taken_over_by_hand_opens_with_work_unchanged() {
     let path = old_database(&format!(
         "{BY_HAND}; INSERT INTO work (kind, id, seq, name, payload, due, attempts, taken_over)
          VALUES ('task', 'x', 1, 'pack', '{{}}', 0, 1, 1);"
     ));
-    let before = shape(&path);
-    assert_eq!(opened(&path), before);
-    assert_eq!(
-        opened(&path),
-        before,
-        "opening again changes nothing either"
-    );
+    let work = |shape: Vec<String>| -> Vec<String> {
+        let of_work = |l: &String| l.starts_with("table work:") || l.contains(" on work:");
+        shape
+            .into_iter()
+            .filter(|l| of_work(l) || l.starts_with("row "))
+            .collect()
+    };
+    let before = work(shape(&path));
+    let once = opened(&path);
+    assert_eq!(work(once.clone()), before);
+    assert_eq!(opened(&path), once, "opening again changes nothing");
 }
 
 #[test]
@@ -159,6 +166,96 @@ fn a_database_with_kept_refusals_keeps_none_once_opened() {
         .map(|r| r.unwrap())
         .collect();
     assert_eq!(keys, ["a"]);
+}
+
+/// Takes a database back to how factum before #40 kept answers: each one a
+/// JSON copy, an applied one's events copied whole.
+fn with_copied_answers(path: &Path, answers: &[(Uuid, Answer)]) {
+    let conn = Connection::open(path).unwrap();
+    conn.execute_batch(
+        "DROP INDEX events_key; DROP TABLE answers;
+         CREATE TABLE answers (key TEXT PRIMARY KEY, answer TEXT NOT NULL);
+         PRAGMA user_version = 3;",
+    )
+    .unwrap();
+    for (key, answer) in answers {
+        conn.execute(
+            "INSERT INTO answers (key, answer) VALUES (?1, ?2)",
+            rusqlite::params![key.to_string(), serde_json::to_string(answer).unwrap()],
+        )
+        .unwrap();
+    }
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn answers_kept_as_copies_answer_the_same_once_opened() {
+    let w = World::new(&Sqlite);
+    let e = w.engine("a");
+    let o = factum_conformance::id();
+    let placed = sub("order.place", json!({ "order": o, "total": 5 }));
+    let first = e.submit(placed.clone()).await.unwrap();
+    w.advance(factum_conformance::domain::EXPIRES_MS);
+    e.settle().await.unwrap();
+    let history = e.history(&StreamId::new("order", o)).await.unwrap();
+    let scheduled = history.iter().find(|ev| ev.kind == "CommandScheduled");
+    let expired = schedule_key(scheduled.unwrap().id);
+    let print = |key: u128| Uuid::from_u128(key);
+    let copies = [
+        (
+            placed.key,
+            Answer {
+                fingerprint: fingerprint(&placed.command, &placed.params),
+                result: AnswerResult::Applied(first.events.clone()),
+            },
+        ),
+        (
+            expired,
+            Answer {
+                fingerprint: fingerprint("order.expire", &json!({ "order": o })),
+                result: AnswerResult::Applied(
+                    history
+                        .iter()
+                        .filter(|ev| ev.meta.key == Some(expired))
+                        .cloned()
+                        .collect(),
+                ),
+            },
+        ),
+        (
+            print(2),
+            Answer {
+                fingerprint: print(2),
+                result: AnswerResult::Applied(Vec::new()),
+            },
+        ),
+        (
+            print(3),
+            Answer {
+                fingerprint: print(3),
+                result: AnswerResult::Rejected(Rejection::new("not_placed", "kept by a runner")),
+            },
+        ),
+    ];
+    let AnswerResult::Applied(cancelled) = &copies[1].1.result else {
+        unreachable!()
+    };
+    assert_eq!(
+        cancelled
+            .iter()
+            .map(|ev| ev.kind.as_str())
+            .collect::<Vec<_>>(),
+        ["OrderCancelled"]
+    );
+    with_copied_answers(w.store.path(), &copies);
+
+    let opened = SqliteStore::open(w.store.path()).unwrap();
+    for (key, copy) in &copies {
+        let answer = opened.answer(*key).await.unwrap().unwrap();
+        assert_eq!(&answer, copy, "{key}");
+    }
+    let again = w.engine("again").submit(placed).await.unwrap();
+    assert!(again.replayed);
+    assert_eq!(again.events, first.events);
 }
 
 #[test]
