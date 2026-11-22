@@ -1,0 +1,15 @@
+{
+  "tree": "58779b095d7a53074210fc1a678c4b6d32da411b+d1fba762150c532c",
+  "picker": "codex:01a20227-ffdb-7210-bc1a-4d1f19b3e975:default",
+  "author": "claude-code:d5444be6-bb18-58a7-ab6f-676d69235007:opus",
+  "picks": {
+    "rust": [
+      {
+        "name": "crates/core/src/process.rs:276:33: replace || with && in advance",
+        "why": "Finishing removes the advance row, so runner tests may never catch a finished process without a pending step calling process.next again.",
+        "outcome": "killed",
+        "first_outcome": "killed"
+      }
+    ]
+  }
+}
