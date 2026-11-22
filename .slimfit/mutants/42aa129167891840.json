@@ -1,0 +1,32 @@
+{
+  "tree": "4f7380835c8444a3d5b808d58e6bf35cdbc0642f+d1fba762150c532c",
+  "picker": "codex:01a20325-d51b-7dd3-92c9-522b9ebe5f7d:default",
+  "author": "claude-code:87f28351-1b80-5475-98df-e96216753949:opus",
+  "picks": {
+    "rust": [
+      {
+        "name": "crates/engine/src/engine.rs:264:44: replace match guard keep with true in Engine<S>::submit_at",
+        "why": "A rejection that should leave the key reusable could become sticky, which only a retry with that key would expose.",
+        "outcome": "killed",
+        "first_outcome": "killed"
+      },
+      {
+        "name": "crates/engine/src/engine.rs:264:44: replace match guard keep with false in Engine<S>::submit_at",
+        "why": "The migration test seeds a stored refusal directly, so it can pass even if the engine stops persisting new refusals.",
+        "outcome": "killed",
+        "first_outcome": "killed"
+      },
+      {
+        "name": "crates/store/src/memory.rs:162:72: replace == with != in <impl Store for MemoryStore>::answer",
+        "why": "The new replay assertions exercise SQLite, so MemoryStore could return events from other submissions on the same stream unless its replay results are checked too.",
+        "outcome": "killed",
+        "first_outcome": "killed"
+      }
+    ]
+  },
+  "removed_tests": {
+    "rust": [
+      "crates/sqlite/tests/conformance.rs:129: a_database_given_taken_over_by_hand_opens_unchanged"
+    ]
+  }
+}
