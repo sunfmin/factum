@@ -261,9 +261,9 @@ impl ProcessState {
 /// What advancing a process comes to.
 #[derive(Clone, Debug, PartialEq)]
 pub enum Advance {
-    /// It has finished.
-    Done,
-    /// A step it asked for has no outcome yet.
+    /// Nothing to take now: a step it asked for has no outcome yet, or it
+    /// has finished (its advance row went with `ProcessFinished`, so no
+    /// runner holds one for it).
     Wait,
     Take {
         key: String,
@@ -273,10 +273,7 @@ pub enum Advance {
 }
 
 pub fn advance(state: &ProcessState, process: &dyn DynProcess) -> Advance {
-    if state.finished.is_some() {
-        return Advance::Done;
-    }
-    if state.pending().is_some() {
+    if state.finished.is_some() || state.pending().is_some() {
         return Advance::Wait;
     }
     match process.next(&state.input, &state.progress) {

@@ -121,13 +121,6 @@ impl<S: Store> Engine<S> {
                 ))),
             };
             let (events, work) = match decision {
-                Advance::Done => (
-                    Vec::new(),
-                    vec![WorkChange::Done {
-                        kind: WorkKind::Advance,
-                        id,
-                    }],
-                ),
                 Advance::Wait => (Vec::new(), vec![release(Instant::NEVER)]),
                 Advance::Finish(finished) => {
                     (vec![ProcessEvent::Finished { finished }], Vec::new())
