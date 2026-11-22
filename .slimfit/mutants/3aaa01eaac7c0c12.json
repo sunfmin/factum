@@ -1,0 +1,15 @@
+{
+  "tree": "8425d5ee63a4c783e53f8c19ee2a296b41d96a14+d1fba762150c532c",
+  "picker": "codex:01a203c6-8265-7a93-951d-78aa9f1b816d:default",
+  "author": "claude-code:c53101cd-8d71-5da2-8c1d-2c27fdb606a4:opus",
+  "picks": {
+    "rust": [
+      {
+        "name": "crates/engine/src/engine.rs:332:49: replace match guard then.is_some_and(|t| t.write.stream == s) with false in Engine<S>::submit_at",
+        "why": "The recurring tests cover a crash before commit and a race on the submission key, so they may miss retries after another runner commits the outcome first.",
+        "outcome": "killed",
+        "first_outcome": "survived"
+      }
+    ]
+  }
+}
