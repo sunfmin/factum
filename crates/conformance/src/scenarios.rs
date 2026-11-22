@@ -159,6 +159,29 @@ pub async fn a_refusal_keeps_nothing_and_a_resend_decides_again<B: Backend>(b: &
     assert_eq!(count(&e, o, "OrderPaid").await, 1);
 }
 
+pub async fn an_answer_with_no_events_keeps_nothing_and_a_resend_decides_again<B: Backend>(b: &B) {
+    let w = World::new(b);
+    let e = w.engine("a");
+    let o = id();
+    let early = sub(
+        "order.pay_when_placed",
+        json!({ "order": o, "charge": "cash" }),
+    );
+    let nothing = e.submit(early.clone()).await.unwrap();
+    assert!(nothing.events.is_empty() && !nothing.replayed);
+    assert!(w.store.answer(early.key).await.unwrap().is_none());
+    e.submit(sub("order.place", json!({ "order": o, "total": 1 })))
+        .await
+        .unwrap();
+    let applied = e.submit(early.clone()).await.unwrap();
+    assert!(!applied.replayed, "the key decided again");
+    assert_eq!(kinds(&applied.events), ["OrderPaid"]);
+    let again = e.engine_again(&w).submit(early).await.unwrap();
+    assert!(again.replayed);
+    assert_eq!(again.events, applied.events);
+    assert_eq!(count(&e, o, "OrderPaid").await, 1);
+}
+
 pub async fn a_fault_is_no_answer_and_the_key_decides_again<B: Backend>(b: &B) {
     let w = World::new(b);
     let buggy = w.engine_with(
@@ -450,6 +473,35 @@ pub async fn a_refused_recurring_command_runs_once_per_period<B: Backend>(b: &B)
     e.settle().await.unwrap();
     // Placed after its run was refused, the order is not paid this period,
     // however many ticks come.
+    e.submit(sub("order.place", json!({ "order": o, "total": 1 })))
+        .await
+        .unwrap();
+    for _ in 0..5 {
+        w.advance(10_000);
+        e.settle().await.unwrap();
+    }
+    assert_eq!(status(&e, o).await, "placed");
+    w.advance(10_000);
+    e.settle().await.unwrap();
+    e.settle().await.unwrap();
+    assert_eq!(status(&e, o).await, "paid");
+    assert_eq!(count(&e, o, "OrderPaid").await, 1);
+}
+
+pub async fn a_recurring_command_that_writes_nothing_runs_once_per_period<B: Backend>(b: &B) {
+    let w = World::new(b);
+    let o = id();
+    let model = w.shop(OrderList::default()).recurring(Recurring {
+        name: "shop.pay_when_placed".into(),
+        command: "order.pay_when_placed".into(),
+        params: json!({ "order": o, "charge": "cash" }),
+        every_seconds: 60,
+        offset_seconds: 0,
+    });
+    let e = w.engine_with(model, "a");
+    e.settle().await.unwrap();
+    // Placed after its run wrote nothing, the order is not paid this
+    // period, however many ticks come.
     e.submit(sub("order.place", json!({ "order": o, "total": 1 })))
         .await
         .unwrap();

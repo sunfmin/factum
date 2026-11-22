@@ -150,8 +150,7 @@ fn a_database_given_taken_over_by_hand_opens_with_work_unchanged() {
 #[test]
 fn a_database_with_kept_refusals_keeps_none_once_opened() {
     let refused = r#"{"fingerprint":"00000000-0000-0000-0000-000000000001","result":{"Rejected":{"code":"wait","message":"later"}}}"#;
-    let applied =
-        r#"{"fingerprint":"00000000-0000-0000-0000-000000000002","result":{"Applied":[]}}"#;
+    let applied = r#"{"fingerprint":"00000000-0000-0000-0000-000000000002","result":{"Applied":[{"stream":"order/x"}]}}"#;
     let path = old_database(&format!(
         "INSERT INTO answers (key, answer) VALUES ('r', '{refused}'), ('a', '{applied}');"
     ));
@@ -246,8 +245,10 @@ async fn answers_kept_as_copies_answer_the_same_once_opened() {
 
     let opened = SqliteStore::open(w.store.path()).unwrap();
     for (key, copy) in &copies {
-        let answer = opened.answer(*key).await.unwrap().unwrap();
-        assert_eq!(&answer, copy, "{key}");
+        let answer = opened.answer(*key).await.unwrap();
+        // factum#41: one that wrote no events is no longer kept.
+        let wrote = !matches!(&copy.result, AnswerResult::Applied(e) if e.is_empty());
+        assert_eq!(answer.as_ref(), wrote.then_some(copy), "{key}");
     }
     let again = w.engine("again").submit(placed).await.unwrap();
     assert!(again.replayed);

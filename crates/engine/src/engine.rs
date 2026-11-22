@@ -88,8 +88,9 @@ pub(crate) fn rejected(code: &str, message: impl Into<String>) -> Error {
 pub struct Submission {
     pub command: String,
     pub params: Value,
-    /// Sending the same key again answers the first applied answer; a
-    /// refusal keeps nothing, so a re-send decides again.
+    /// Sending the same key again answers the first answer that wrote
+    /// events; a refusal, or one that wrote none, keeps nothing, so a
+    /// re-send decides again.
     pub key: Uuid,
     pub by: By,
 }
@@ -244,9 +245,10 @@ impl<S: Store> Engine<S> {
         self.submit_at(submission, self.clock.now(), false).await
     }
 
-    /// Submits at `now`. A refusal is kept for the key only when `keep`:
-    /// factum's own runners (steps, schedules, recurring) keep theirs, so a
-    /// runner that took one over answers what the first decided.
+    /// Submits at `now`. A refusal, or an answer that wrote no events, is
+    /// kept for the key only when `keep`: factum's own runners (steps,
+    /// schedules, recurring) keep theirs, so a runner that took one over
+    /// answers what the first decided.
     pub(crate) async fn submit_at(
         &self,
         sub: Submission,
@@ -285,6 +287,14 @@ impl<S: Store> Engine<S> {
                 Err(e) => return Err(e),
             };
             let (loaded, new) = decided;
+            // Like a refusal, an external submit that writes nothing keeps
+            // nothing: a re-send decides again and can apply nothing twice.
+            if new.is_empty() && !keep {
+                return Ok(Applied {
+                    events: Vec::new(),
+                    replayed: false,
+                });
+            }
             let write = Write {
                 stream: stream.clone(),
                 expected: loaded.version,
