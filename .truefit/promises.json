@@ -1,0 +1,8 @@
+{
+  "ee975fa566b4": {
+    "kind": "fixed-often",
+    "mark": "not",
+    "summary": "crates/conformance/src/lib.rs was changed by 2 fixes in 180 days, and no registered promise's check covers it",
+    "why": "Both fixes change this file only by registering a new scenario in suite! (factum#8: a_writer_that_loses_every_race_gives_up, SPEC §7's 1000-loss bound; f499aec: a_result_whose_lease_ran_out_meanwhile_is_refused and a_wake_while_a_runner_holds_the_process_is_not_lost). The file is the conformance test registry; the promises it registers are checked by those scenarios (tests), whose code truefit cannot see."
+  }
+}
