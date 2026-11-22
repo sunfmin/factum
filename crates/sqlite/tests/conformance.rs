@@ -274,6 +274,19 @@ async fn copies_answer_the_same_once_opened(version: u32) {
     let again = w.engine("again").submit(placed).await.unwrap();
     assert!(again.replayed);
     assert_eq!(again.events, first.events);
+    // A submit since keeps no row either: its events are its answer.
+    let next = sub(
+        "order.place",
+        json!({ "order": factum_conformance::id(), "total": 1 }),
+    );
+    assert!(
+        !w.engine("next")
+            .submit(next)
+            .await
+            .unwrap()
+            .events
+            .is_empty()
+    );
     let conn = Connection::open(w.store.path()).unwrap();
     let rows: u32 = conn
         .query_row("SELECT COUNT(*) FROM answers", [], |r| r.get(0))

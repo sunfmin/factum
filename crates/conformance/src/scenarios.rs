@@ -142,6 +142,27 @@ pub async fn a_key_replays_its_first_answer_and_refuses_reuse<B: Backend>(b: &B)
     assert_eq!(e.history(&order(o)).await.unwrap().len(), 2);
 }
 
+pub async fn a_key_another_writer_answered_first_elsewhere_is_reused<B: Backend>(b: &B) {
+    let w = World::new(b);
+    let (a, flaky) = w.flaky("a");
+    let other = w.engine("b");
+    let (mine, theirs) = (id(), id());
+    let s = sub("order.place", json!({ "order": mine, "total": 5 }));
+    // Another writer answers the key first, with other params, so its
+    // events are in another stream: only the key itself tells them apart.
+    let mut rival = s.clone();
+    rival.params = json!({ "order": theirs, "total": 5 });
+    flaky.race_on(
+        |u| appends(u, "OrderPlaced"),
+        Box::pin(async move {
+            other.submit(rival).await.unwrap();
+        }),
+    );
+    assert_eq!(refused(a.submit(s).await), "key_reused");
+    assert!(a.history(&order(mine)).await.unwrap().is_empty());
+    assert_eq!(count(&a, theirs, "OrderPlaced").await, 1);
+}
+
 pub async fn a_refusal_keeps_nothing_and_a_resend_decides_again<B: Backend>(b: &B) {
     let w = World::new(b);
     let e = w.engine("a");
