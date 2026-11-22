@@ -25,8 +25,8 @@ covers = [
   { action = "Request", file = "crates/engine/src/work.rs", function = "Engine::advance_one" },
   { action = "Wait", file = "crates/engine/src/work.rs", function = "Engine::advance_one" },
   { action = "Finished", file = "crates/engine/src/work.rs", function = "Engine::advance_one" },
-  { action = "Submit", file = "crates/engine/src/work.rs", function = "Engine::advance_one" },
-  { action = "RecordRun", file = "crates/engine/src/work.rs", function = "Engine::advance_one" },
+  { action = "RunStep", file = "crates/engine/src/work.rs", function = "Engine::advance_one" },
+  { action = "RunStep", file = "crates/engine/src/engine.rs", function = "Engine::submit_at" },
   { action = "Decide", file = "crates/core/src/process.rs", function = "advance" },
   { action = "Decide", file = "crates/conformance/src/domain.rs", function = "CheckoutProcess::next" },
   { action = "Decide", file = "crates/conformance/src/domain.rs", function = "ReceiptProcess::next" },
@@ -47,8 +47,8 @@ covers = [
 ]
 
 # Each step's record as the model's state: the orders as the simulation
-# prints them. The calls runners hold, the stored answers and the wakes
-# held are left free: TLC tries every value the model allows.
+# prints them. The calls runners hold and the wakes held are left free:
+# TLC tries every value the model allows.
 [model.trace]
 orders = "r.state.orders"
 

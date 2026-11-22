@@ -8,7 +8,8 @@ use factum::{
     Value, Version,
 };
 use factum_core::{
-    Recurring, Work, WorkChange, WorkKind, recurring_key, schedule_key, start_key, step_key,
+    Recurring, Work, WorkChange, WorkKind, recurring_key, recurring_stream, schedule_key,
+    start_key, step_key,
 };
 use factum_store::{AnswerResult, Batch, StoreError, Unit};
 use serde_json::json;
@@ -231,15 +232,12 @@ pub async fn a_refusal_that_loses_its_key_answers_what_the_key_holds<B: Backend>
     let o = id();
     let (a, flaky) = w.flaky_with(pays(&w, o), "a");
     let other = w.engine("b");
-    // The recurring payment is refused, but before it keeps the refusal for
-    // its period another writer places the order and pays it under that key.
+    // The recurring payment is refused, but before it records the refusal
+    // for its period another writer places the order and pays it under that
+    // key.
     let key = recurring_key("shop.pay", crate::START.0 / 1000);
     flaky.race_on(
-        |u| {
-            u.answer
-                .as_ref()
-                .is_some_and(|(_, a)| matches!(a.result, AnswerResult::Rejected(_)))
-        },
+        |u| appends(u, "RecurringRan") && !appends(u, "OrderPaid"),
         Box::pin(async move {
             other
                 .submit(sub("order.place", json!({ "order": o, "total": 100 })))
@@ -254,6 +252,9 @@ pub async fn a_refusal_that_loses_its_key_answers_what_the_key_holds<B: Backend>
     let kept = w.store.answer(key).await.unwrap().unwrap();
     assert!(matches!(kept.result, AnswerResult::Applied(_)), "{kept:?}");
     assert_eq!(count(&a, o, "OrderPaid").await, 1);
+    let ran = a.history(&recurring_stream(key)).await.unwrap();
+    assert_eq!(ran.len(), 1);
+    assert_eq!(ran[0].data["ok"], true, "{ran:?}");
 }
 
 pub async fn a_plan_records_nothing<B: Backend>(b: &B) {
@@ -584,28 +585,140 @@ pub async fn a_refused_step_is_compensated<B: Backend>(b: &B) {
     assert_eq!(status(&e, o).await, "cancelled");
 }
 
-pub async fn a_step_run_but_not_recorded_is_replayed_not_repeated<B: Backend>(b: &B) {
-    let w = World::new(b);
-    let (a, flaky) = w.flaky("a");
-    let (o, p) = checkout(&a, 500).await;
-    flaky.crash_on(|u| records_step(u, "pay"));
-    assert!(a.settle().await.is_err());
-    assert_eq!(status(&a, o).await, "paid");
+/// The three outcomes a runner's command has, each on an order of its own:
+/// the command, whether the order is placed first, and how its outcome
+/// reads (`ok`, `rejected`) with the `OrderPaid` it leaves.
+const OUTCOMES: [(&str, bool, bool, usize); 3] = [
+    ("order.pay", true, true, 1),
+    ("order.pay", false, false, 0),
+    ("order.pay_when_placed", false, true, 0),
+];
 
-    let bb = w.engine("b");
-    bb.settle().await.unwrap();
-    assert_eq!(
-        finished(&bb, p).await,
-        None,
-        "a's lease still holds the process"
-    );
-    w.advance(Options::default().advance_lease_ms);
-    bb.settle().await.unwrap();
-    assert!(matches!(
-        finished(&bb, p).await,
-        Some(Finished::Completed(_))
-    ));
-    assert_eq!(count(&bb, o, "OrderPaid").await, 1);
+/// Whether `outcome` (a `Recorded` outcome, or `ScheduleRan`'s or
+/// `RecurringRan`'s data) says the command applied.
+fn applied(outcome: &Value) -> bool {
+    outcome.get("ok").is_some_and(|ok| ok != &json!(false))
+}
+
+pub async fn a_step_whose_runner_dies_at_its_outcome_runs_once<B: Backend>(b: &B) {
+    for (command, placed, ok, paid) in OUTCOMES {
+        let w = World::new(b);
+        let (a, flaky) = w.flaky("a");
+        let o = if placed { place(&a, 5).await } else { id() };
+        let p = id();
+        let input = json!({ "order": o, "command": command });
+        a.start("settle", p, input, ann()).await.unwrap();
+        flaky.crash_on(|u| records_step(u, "run"));
+        assert!(a.settle().await.is_err());
+        assert_eq!(
+            count(&a, o, "OrderPaid").await,
+            0,
+            "{command}: nothing landed"
+        );
+
+        let bb = w.engine("b");
+        w.advance(Options::default().advance_lease_ms);
+        bb.settle().await.unwrap();
+        let view = bb.process(p).await.unwrap();
+        let outcome = serde_json::to_value(view.progress.outcome("run")).unwrap();
+        assert_eq!(applied(&outcome), ok, "{command}: {outcome}");
+        assert!(view.finished.is_some(), "{command}");
+        assert_eq!(count(&bb, o, "OrderPaid").await, paid, "{command}");
+    }
+}
+
+pub async fn a_schedule_whose_runner_dies_at_its_outcome_runs_once<B: Backend>(b: &B) {
+    // Each order's schedule: `order.expire` of a placed order (cancels),
+    // of a paid one (refused), and `order.pay_when_placed` of an order
+    // never placed (writes nothing).
+    for (case, ok, cancelled) in [("placed", true, 1), ("paid", false, 0), ("later", true, 0)] {
+        let w = World::new(b);
+        let (a, flaky) = w.flaky("a");
+        let o = if case == "later" {
+            let o = id();
+            let later = sub("order.pay_later", json!({ "order": o }));
+            a.submit(later).await.unwrap();
+            o
+        } else {
+            place(&a, 5).await
+        };
+        if case == "paid" {
+            pay(&a, o).await;
+        }
+        a.settle().await.unwrap();
+        w.advance(EXPIRES_MS);
+        flaky.crash_on(|u| appends(u, "ScheduleRan"));
+        assert!(a.settle().await.is_err(), "{case}");
+        assert_eq!(
+            count(&a, o, "OrderCancelled").await,
+            0,
+            "{case}: nothing landed"
+        );
+
+        let bb = w.engine("b");
+        w.advance(Options::default().schedule_lease_ms);
+        bb.settle().await.unwrap();
+        a.settle().await.unwrap();
+        let history = bb.history(&order(o)).await.unwrap();
+        let scheduled = history.iter().find(|ev| ev.kind == "CommandScheduled");
+        let ran = bb
+            .history(&StreamId::new("schedule", scheduled.unwrap().id))
+            .await
+            .unwrap();
+        assert_eq!(kinds(&ran), ["ScheduleRan"], "{case}");
+        assert_eq!(applied(&ran[0].data), ok, "{case}: {}", ran[0].data);
+        assert_eq!(count(&bb, o, "OrderCancelled").await, cancelled, "{case}");
+        assert_eq!(
+            count(&bb, o, "OrderPaid").await,
+            usize::from(case == "paid")
+        );
+    }
+}
+
+pub async fn a_recurring_run_whose_runner_dies_at_its_outcome_runs_once_per_period<B: Backend>(
+    b: &B,
+) {
+    for (command, placed, ok, paid) in OUTCOMES {
+        let w = World::new(b);
+        let o = id();
+        let model = w.shop(OrderList::default()).recurring(Recurring {
+            name: "shop.settle".into(),
+            command: command.into(),
+            params: json!({ "order": o, "charge": "cash" }),
+            every_seconds: 60,
+            offset_seconds: 0,
+        });
+        let (a, flaky) = w.flaky_with(model, "a");
+        if placed {
+            a.submit(sub("order.place", json!({ "order": o, "total": 1 })))
+                .await
+                .unwrap();
+        }
+        let key = recurring_key("shop.settle", crate::START.0 / 1000);
+        flaky.crash_on(move |u| u.appends.iter().any(|a| a.stream == recurring_stream(key)));
+        assert!(a.settle().await.is_err(), "{command}");
+        assert_eq!(
+            count(&a, o, "OrderPaid").await,
+            0,
+            "{command}: nothing landed"
+        );
+
+        a.settle().await.unwrap();
+        // Placed now, the order is not paid again this period.
+        if !placed {
+            a.submit(sub("order.place", json!({ "order": o, "total": 1 })))
+                .await
+                .unwrap();
+        }
+        for _ in 0..3 {
+            w.advance(10_000);
+            a.settle().await.unwrap();
+        }
+        let ran = a.history(&recurring_stream(key)).await.unwrap();
+        assert_eq!(kinds(&ran), ["RecurringRan"], "{command}");
+        assert_eq!(applied(&ran[0].data), ok, "{command}: {}", ran[0].data);
+        assert_eq!(count(&a, o, "OrderPaid").await, paid, "{command}");
+    }
 }
 
 pub async fn a_call_whose_answer_was_lost_is_made_again_and_done_once<B: Backend>(b: &B) {
@@ -1537,7 +1650,7 @@ pub async fn a_store_error_ends_the_tick_and_a_fault_does_not<B: Backend>(b: &B)
             "after a failed {call:?}, the fault is set aside and the tick goes on"
         );
     }
-    for call in [Call::ReadLog, Call::ReadStream, Call::Claim, Call::Answer] {
+    for call in [Call::ReadLog, Call::ReadStream, Call::Claim] {
         assert!(made.contains(&call), "a tick calls {call:?}");
     }
 }

@@ -2,14 +2,18 @@
 //! actions, handing tasks to workers, running schedules and waits.
 
 use factum_core::{
-    Advance, Attempt, By, Event, Instant, Meta, NewEvent, Outcome, PROCESS, ProcessEvent, Recorded,
-    SCHEDULE_RAN, Step, StreamId, Uuid, Value, Version, Work, WorkChange, WorkKind, advance, codes,
-    recurring_key, schedule_key, schedule_stream, step_key,
+    Advance, Attempt, By, Event, Instant, Meta, NewEvent, Outcome, PROCESS, ProcessEvent,
+    RECURRING_RAN, Recorded, Rejection, SCHEDULE_RAN, Step, StreamId, Uuid, Value, Version, Work,
+    WorkChange, WorkKind, advance, codes, recurring_key, recurring_stream, schedule_key,
+    schedule_stream, step_key,
 };
 use factum_store::{Claim, Store, StoreError, Unit};
 use serde_json::json;
 
-use crate::engine::{Engine, Error, Fault, Races, Submission, Write, rejected, set_aside};
+use crate::engine::{
+    Engine, Error, Fault, Races, Submission, Then, Write, new_event, process_write, rejected,
+    set_aside,
+};
 use crate::model::ActionAnswer;
 
 /// A task a worker holds.
@@ -135,14 +139,29 @@ impl<S: Store> Engine<S> {
                         key: step_key(id, &key),
                         by: by.clone(),
                     };
-                    let outcome = match self.submit_at(sub, now, true).await {
-                        Ok(applied) => Outcome::Ok(Value::Array(
-                            applied.events.iter().map(event_json).collect(),
-                        )),
-                        Err(Error::Rejected(r)) => Outcome::Rejected(r),
-                        Err(e) => return Err(e),
+                    let recorded = |o: Result<&[Event], &Rejection>| {
+                        let outcome = match o {
+                            Ok(events) => {
+                                Outcome::Ok(Value::Array(events.iter().map(event_json).collect()))
+                            }
+                            Err(r) => Outcome::Rejected(r.clone()),
+                        };
+                        let key = key.clone();
+                        vec![new_event(ProcessEvent::Recorded { key, outcome })]
                     };
-                    (vec![ProcessEvent::Recorded { key, outcome }], Vec::new())
+                    let then = Then {
+                        write: process_write(id, version, &by, now, guard.clone()),
+                        outcome: &recorded,
+                    };
+                    match self.submit_at(sub, now, Some(&then)).await {
+                        Ok(_) | Err(Error::Rejected(_)) => continue,
+                        Err(Error::Store(StoreError::Conflict(_))) => {
+                            races.lost(format!("advancing {stream}")).await?;
+                            continue;
+                        }
+                        Err(Error::Store(StoreError::LeaseLost)) => return Ok(()),
+                        Err(e) => return Err(e),
+                    }
                 }
                 Advance::Take {
                     key,
@@ -483,9 +502,14 @@ impl<S: Store> Engine<S> {
             })
             .await?;
         for r in &self.model.recurring {
-            let start = r.period_start(now);
-            let key = recurring_key(&r.name, start);
-            if self.store.answer(key).await?.is_some() {
+            let key = recurring_key(&r.name, r.period_start(now));
+            let stream = recurring_stream(key);
+            if !self
+                .store
+                .read_stream(&stream, Version(0))
+                .await?
+                .is_empty()
+            {
                 continue;
             }
             let sub = Submission {
@@ -494,10 +518,7 @@ impl<S: Store> Engine<S> {
                 key,
                 by: By::Recurring(r.name.clone()),
             };
-            let ran = match self.submit_at(sub, now, true).await {
-                Ok(_) | Err(Error::Rejected(_)) => Ok(()),
-                Err(e) => Err(e),
-            };
+            let ran = self.run_once(sub, stream, RECURRING_RAN, now).await;
             if set_aside(ran, || format!("recurring {}", r.name), faults)?.is_some() {
                 count += 1;
             }
@@ -514,31 +535,48 @@ impl<S: Store> Engine<S> {
             key: schedule_key(row.id),
             by: By::Schedule(row.id),
         };
-        let outcome = match self.submit_at(sub, now, true).await {
-            Ok(_) => json!({ "ok": true }),
-            Err(Error::Rejected(r)) => json!({ "ok": false, "rejection": r }),
-            Err(e) => return Err(e),
+        self.run_once(sub, schedule_stream(row.id), SCHEDULE_RAN, now)
+            .await
+    }
+
+    /// Submits `sub` once: its outcome, a refusal included, is an event
+    /// `ran` that begins `stream`, committed with the command's events. Run
+    /// already (`stream` begun by another runner), it does nothing.
+    async fn run_once(
+        &self,
+        sub: Submission,
+        stream: StreamId,
+        ran: &str,
+        now: Instant,
+    ) -> Result<(), Error> {
+        let outcome = |o: Result<&[Event], &Rejection>| {
+            let data = match o {
+                Ok(_) => json!({ "ok": true }),
+                Err(r) => json!({ "ok": false, "rejection": r }),
+            };
+            let kind = ran.to_string();
+            vec![NewEvent { kind, data }]
         };
-        let ran = Write {
-            stream: schedule_stream(row.id),
-            expected: Version(0),
-            events: vec![NewEvent {
-                kind: SCHEDULE_RAN.to_string(),
-                data: outcome,
-            }],
-            meta: Meta {
-                now,
-                by: By::Schedule(row.id),
-                key: Some(schedule_key(row.id)),
-                command: row.name.clone(),
-                fingerprint: None,
+        let then = Then {
+            write: Write {
+                stream,
+                expected: Version(0),
+                events: Vec::new(),
+                meta: Meta {
+                    now,
+                    by: sub.by.clone(),
+                    key: Some(sub.key),
+                    command: sub.command.clone(),
+                    fingerprint: None,
+                },
+                work: Vec::new(),
+                guards: Vec::new(),
             },
-            work: Vec::new(),
-            guards: Vec::new(),
+            outcome: &outcome,
         };
-        match self.write(ran).await {
-            Ok(_) | Err(StoreError::Conflict(_)) => Ok(()),
-            Err(e) => Err(e.into()),
+        match self.submit_at(sub, now, Some(&then)).await {
+            Ok(_) | Err(Error::Rejected(_)) | Err(Error::Store(StoreError::Conflict(_))) => Ok(()),
+            Err(e) => Err(e),
         }
     }
 

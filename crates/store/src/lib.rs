@@ -74,57 +74,22 @@ pub enum AnswerResult {
     Rejected(Rejection),
 }
 
-/// What a store keeps for a key whose answer wrote no events: its
-/// fingerprint and, if it was one, the refusal. Only factum's runners keep
-/// such answers. An answer that wrote events keeps nothing beside them: it
-/// is read from them, by the key and fingerprint in their meta.
-#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
-pub struct Kept {
-    pub fingerprint: Uuid,
-    pub result: std::result::Result<(), Rejection>,
-}
-
-impl Kept {
-    /// What a store keeps of the answer: nothing if it wrote events.
-    pub fn of(answer: &Answer) -> Option<Kept> {
-        let result = match &answer.result {
-            AnswerResult::Applied(events) if !events.is_empty() => return None,
-            AnswerResult::Applied(_) => Ok(()),
-            AnswerResult::Rejected(r) => Err(r.clone()),
-        };
-        Some(Kept {
-            fingerprint: answer.fingerprint,
-            result,
-        })
-    }
-}
-
 /// A key's answer, the way every store must read it: of `events`, those
 /// committed under the key in commit order, the ones whose meta carries a
-/// fingerprint are its applied answer (an event the engine wrote beside it
-/// under the key, such as `ScheduleRan`, carries none); with none, what is
-/// `kept` for the key.
-pub fn read_answer(
-    events: Vec<Event>,
-    kept: impl FnOnce() -> Result<Option<Kept>>,
-) -> Result<Option<Answer>> {
+/// fingerprint are its answer (an event the engine wrote under the key as a
+/// runner's outcome, such as `ScheduleRan`, carries none). A key whose
+/// submission wrote no events has none: nothing is kept per key beside the
+/// log.
+pub fn read_answer(events: Vec<Event>) -> Option<Answer> {
     let events: Vec<Event> = events
         .into_iter()
         .filter(|e| e.meta.fingerprint.is_some())
         .collect();
-    if let Some(fingerprint) = events.first().and_then(|e| e.meta.fingerprint) {
-        return Ok(Some(Answer {
-            fingerprint,
-            result: AnswerResult::Applied(events),
-        }));
-    }
-    Ok(kept()?.map(|k| Answer {
-        fingerprint: k.fingerprint,
-        result: match k.result {
-            Ok(()) => AnswerResult::Applied(Vec::new()),
-            Err(r) => AnswerResult::Rejected(r),
-        },
-    }))
+    let fingerprint = events.first()?.meta.fingerprint?;
+    Some(Answer {
+        fingerprint,
+        result: AnswerResult::Applied(events),
+    })
 }
 
 /// Events for one stream, appended only if it is still at `expected`.
@@ -139,7 +104,8 @@ pub struct Append {
 #[derive(Clone, Debug, Default)]
 pub struct Unit {
     pub appends: Vec<Append>,
-    pub answer: Option<(Uuid, Answer)>,
+    /// The submission's key: the unit commits only while it has no answer.
+    pub key: Option<Uuid>,
     pub work: Vec<WorkChange>,
     /// Rows that must still be held under these leases.
     pub guards: Vec<(WorkKind, Uuid, Uuid)>,
@@ -229,14 +195,12 @@ pub trait Store: Send + Sync + 'static {
     ) -> impl Future<Output = Result<Vec<Event>>> + Send;
 
     /// What the key answers ([`read_answer`]): the events committed under
-    /// it (with positions), found by the key in their meta, or what is
-    /// [`Kept`] for a key whose answer wrote none.
+    /// it (with positions), found by the key in their meta.
     fn answer(&self, key: Uuid) -> impl Future<Output = Result<Option<Answer>>> + Send;
 
-    /// Writes the unit, answering its events as committed (with positions);
-    /// of its answer, only what [`Kept::of`] takes is kept.
+    /// Writes the unit, answering its events as committed (with positions).
     /// `Conflict` if a stream moved, `KeyTaken` if the key has an answer
-    /// (events committed under it with a fingerprint, or a kept one),
+    /// (events committed under it with a fingerprint),
     /// `LeaseLost` if a guard or release does not hold.
     fn commit(&self, unit: Unit) -> impl Future<Output = Result<Vec<Event>>> + Send;
 
@@ -344,10 +308,10 @@ pub fn check_unit(
             return Err(StoreError::Conflict(a.stream.clone()));
         }
     }
-    if let Some((key, _)) = &unit.answer
-        && answered(*key)?
+    if let Some(key) = unit.key
+        && answered(key)?
     {
-        return Err(StoreError::KeyTaken(*key));
+        return Err(StoreError::KeyTaken(key));
     }
     for (kind, id, held) in unit.leases() {
         if lease(kind, id)? != Some(held) {

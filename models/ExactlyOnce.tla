@@ -21,10 +21,9 @@ CONSTANTS
 VARIABLES
     orders,   \* each order as the simulation prints it (sim.rs, `seen`)
     calls,    \* the attempts runners hold: claimed, or answered and not ended
-    answers,  \* the stored answer of each Run step's submission key
     woken     \* advance rows woken while a claim held them (the store's `woken`)
 
-vars == <<orders, calls, answers, woken>>
+vars == <<orders, calls, woken>>
 
 Procs == {"checkout", "receipt"}
 Steps == [checkout |-> {"charge", "find", "pay", "cancel"}, receipt |-> {"print"}]
@@ -100,7 +99,7 @@ Place ==
                                    cancelled |-> 0, printed |-> 0,
                                    checkout |-> NewProc("checkout"),
                                    receipt |-> NewProc("receipt")])
-    /\ UNCHANGED <<calls, answers, woken>>
+    /\ UNCHANGED <<calls, woken>>
 
 \* The rows of `S` (process pairs) of the kind `r` ("advance", "action"), claimed.
 ClaimRows(S, r) ==
@@ -115,7 +114,7 @@ ClaimAdvance ==
        /\ S # {}
        /\ orders' = ClaimRows(S, "advance")
        /\ woken' = woken \ S
-       /\ UNCHANGED <<calls, answers>>
+       /\ UNCHANGED calls
 
 (* `deliver`'s claim of one action's rows: each attempt is now a call the *)
 (* claiming runner holds under the new lease.                             *)
@@ -130,7 +129,7 @@ ClaimAction ==
        /\ calls' = {c \in calls : <<c.o, c.p>> \notin S} \cup
             {[o |-> x[1], p |-> x[2], step |-> a, lease |-> P(x[1], x[2]).action.attempts + 1,
               taken_over |-> P(x[1], x[2]).action.held, phase |-> "claimed", answer |-> ""] : x \in S}
-       /\ UNCHANGED <<answers, woken>>
+       /\ UNCHANGED woken
 
 (* `advance_one`, under the advance row's lease: each commit one action.  *)
 Holds(o, p) == P(o, p).advance.held /\ P(o, p).end = ""
@@ -140,50 +139,45 @@ Request(o, p) ==
     LET q == P(o, p) IN
     /\ Holds(o, p) /\ q.pending = "" /\ Next_(o, p).kind = "call"
     /\ ReleaseAdvance(o, p, [q EXCEPT !.pending = Next_(o, p).step, !.action = NewRow])
-    /\ UNCHANGED <<calls, answers>>
+    /\ UNCHANGED calls
 
 \* `Advance::Wait`: a step is pending; the row waits for its outcome.
 Wait(o, p) ==
     /\ Holds(o, p) /\ P(o, p).pending # ""
     /\ ReleaseAdvance(o, p, P(o, p))
-    /\ UNCHANGED <<calls, answers>>
+    /\ UNCHANGED calls
 
 \* `Advance::Finish`: ProcessFinished, the advance row done with it.
 Finished(o, p) ==
     LET q == P(o, p) IN
     /\ Holds(o, p) /\ q.pending = "" /\ Next_(o, p).kind = "finish"
     /\ SetProc(o, p, [q EXCEPT !.end = Next_(o, p).step, !.advance = NoRow])
-    /\ UNCHANGED <<calls, answers, woken>>
+    /\ UNCHANGED <<calls, woken>>
 
 \* `Advance::Take` of a Run step: the command submitted under the step's
-\* key. Not under the lease: a runner whose lease ran out may submit too,
-\* and the key answers it what it answered first.
-Submit(o) ==
+\* key, its events and the step's outcome in one commit, under the lease
+\* (`submit_at` with the step's `Recorded`; `effects` of StepRecorded wake
+\* the advance row the runner holds). A runner whose lease was taken over
+\* commits nothing (`Unseen`), so the command is applied at most once.
+RunStep(o) ==
     LET q == P(o, "checkout")
         s == Next_(o, "checkout").step
         ok == Placed(o)
     IN
-    /\ q.end = "" /\ q.pending = "" /\ q.advance.exists
+    /\ Holds(o, "checkout") /\ q.pending = ""
     /\ Next_(o, "checkout").kind = "run"
-    /\ ~\E x \in answers : x.o = o /\ x.step = s
-    /\ answers' = answers \cup {[o |-> o, step |-> s, answer |-> IF ok THEN "ok" ELSE "rejected"]}
     /\ orders' = [orders EXCEPT ![o].paid = IF ok /\ s = "pay" THEN @ + 1 ELSE @,
-                                ![o].cancelled = IF ok /\ s = "cancel" THEN @ + 1 ELSE @]
-    /\ UNCHANGED <<calls, woken>>
-
-\* ... and its outcome recorded, under the lease.
-RecordRun(o) ==
-    LET s == Next_(o, "checkout").step IN
-    /\ Holds(o, "checkout") /\ P(o, "checkout").pending = ""
-    /\ Next_(o, "checkout").kind = "run"
-    /\ \E x \in answers : x.o = o /\ x.step = s /\ Recorded(o, "checkout", s, x.answer)
-    /\ UNCHANGED <<calls, answers>>
+                                ![o].cancelled = IF ok /\ s = "cancel" THEN @ + 1 ELSE @,
+                                ![o].checkout = [q EXCEPT !.steps[s] = IF ok THEN "ok" ELSE "rejected",
+                                                          !.pending = "", !.action = NoRow]]
+    /\ woken' = woken \cup {<<o, "checkout">>}
+    /\ UNCHANGED calls
 
 (* The order's scheduled `order.expire` runs: a placed order is cancelled. *)
 Expire(o) ==
     /\ Placed(o)
     /\ orders' = [orders EXCEPT ![o].cancelled = @ + 1]
-    /\ UNCHANGED <<calls, answers, woken>>
+    /\ UNCHANGED <<calls, woken>>
 
 (* `deliver_one`, for an attempt `c` a runner holds under its lease. Each  *)
 (* of its writes is guarded by the lease; one that lost it is `Unseen`.   *)
@@ -193,7 +187,6 @@ Ended(c, record) ==
     /\ Current(c)
     /\ calls' = calls \ {c}
     /\ record
-    /\ UNCHANGED answers
 
 \* `RetryPolicy::on_claim`: taken over when done at most once, or past the
 \* last attempt, the step ends Unknown without a call.
@@ -212,7 +205,7 @@ CallOutside(c) ==
         answer(a) == calls' = (calls \ {c}) \cup {[c EXCEPT !.phase = "answered", !.answer = a]}
     IN
     /\ c.phase = "claimed" /\ ~Spent(c) /\ Current(c)
-    /\ UNCHANGED <<answers, woken>>
+    /\ UNCHANGED woken
     /\ CASE c.step = "charge" ->
               \/ ord.charged = 0 /\ answer("busy") /\ UNCHANGED orders
               \/ ord.over /\ answer("rejected") /\ UNCHANGED orders
@@ -241,11 +234,10 @@ Unseen == UNCHANGED vars
 -----------------------------------------------------------------------------
 Init == /\ orders = <<>>
         /\ calls = {}
-        /\ answers = {}
         /\ woken = {}
 
 Next == \/ Place \/ ClaimAdvance \/ ClaimAction
-        \/ \E o \in O : \/ Submit(o) \/ RecordRun(o) \/ Expire(o)
+        \/ \E o \in O : \/ RunStep(o) \/ Expire(o)
                         \/ \E p \in Procs : Request(o, p) \/ Wait(o, p) \/ Finished(o, p)
         \/ \E c \in calls : EndUnknown(c) \/ CallOutside(c) \/ Answered(c)
         \/ Unseen
@@ -257,7 +249,7 @@ Spec == Init /\ [][Next]_vars
 
 \* No order is charged twice: the payment system keeps one charge per key.
 charged_once == \A o \in O : orders[o].charged <= 1
-\* No order is paid twice: the pay step's key answers its first answer.
+\* No order is paid twice: the pay step's events commit with its outcome.
 paid_once == \A o \in O : orders[o].paid <= 1
 \* An at-most-once call is made at most once.
 printed_at_most_once == \A o \in O : orders[o].printed <= 1

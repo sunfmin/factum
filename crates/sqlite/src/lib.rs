@@ -23,7 +23,7 @@ use factum_core::{
     WorkChange, WorkKind,
 };
 use factum_store::{
-    Answer, Batch, Checkpoint, Claim, DeadLetter, Kept, Result, Snapshot, Store, StoreError, Unit,
+    Answer, Batch, Checkpoint, Claim, DeadLetter, Result, Snapshot, Store, StoreError, Unit,
     apply_op, check_batch, check_unit, claim_row, op_target, read_answer, release_row, wake_row,
 };
 use rusqlite::types::Value as Sql;
@@ -122,6 +122,12 @@ const STEPS: &[fn(&Transaction) -> rusqlite::Result<()>] = &[
         tx.execute_batch(&format!("{AS_KEPT} WHERE {old}"))?;
         tx.execute_batch(FINGERPRINT_IN_META)
     },
+    // factum#43: a runner's outcome is an event committed with its submit,
+    // so nothing is kept per key beside the log. A row left from a runner
+    // that died between its two commits goes: that step or schedule decides
+    // again, that recurring command may run once more in the period this
+    // opens in.
+    |tx| tx.execute_batch("DROP TABLE answers"),
 ];
 
 /// Each key's fingerprint, kept beside the events it wrote (`{"Ok":
@@ -138,9 +144,8 @@ DELETE FROM answers WHERE json_type(answer, '$.result.Ok') = 'text';
 ";
 
 /// Whether a key has an answer: events committed under it with a
-/// fingerprint, or a row kept for it.
-const ANSWERED: &str = "SELECT EXISTS (SELECT 1 FROM answers WHERE key = ?1) OR EXISTS (
-    SELECT 1 FROM events INDEXED BY events_key
+/// fingerprint.
+const ANSWERED: &str = "SELECT EXISTS (SELECT 1 FROM events INDEXED BY events_key
     WHERE json_extract(meta, '$.key') = ?1 AND json_extract(meta, '$.fingerprint') IS NOT NULL)";
 
 /// Each answer kept as a copy (before factum#40) becomes what factum#40
@@ -595,11 +600,7 @@ impl Store for SqliteStore {
         self.run(move |c| {
             let key = key.to_string();
             let sql = format!("SELECT {EVENT_COLUMNS} FROM events INDEXED BY events_key WHERE json_extract(meta, '$.key') = ?1 ORDER BY seq");
-            read_answer(events(c, &sql, [&key])?, || {
-                let sql = "SELECT answer FROM answers WHERE key = ?1";
-                let found: Option<String> = c.query_row(sql, [&key], |r| r.get(0)).optional().map_err(backend)?;
-                found.map(|a| parse::<Kept>(&a)).transpose()
-            })
+            Ok(read_answer(events(c, &sql, [&key])?))
         })
         .await
     }
@@ -630,10 +631,6 @@ impl Store for SqliteStore {
                     e.position = Position(0, tx.last_insert_rowid() as u64);
                     committed.push(e);
                 }
-            }
-            if let Some((key, kept)) = unit.answer.and_then(|(k, a)| Some((k, Kept::of(&a)?))) {
-                tx.execute("INSERT INTO answers (key, answer) VALUES (?1, ?2)", params![key.to_string(), json(&kept)?])
-                .map_err(backend)?;
             }
             for c in &unit.work {
                 change(tx, c)?;

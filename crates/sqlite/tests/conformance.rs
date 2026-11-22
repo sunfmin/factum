@@ -155,17 +155,15 @@ fn a_database_with_kept_refusals_keeps_none_once_opened() {
         "INSERT INTO answers (key, answer) VALUES ('r', '{refused}'), ('a', '{applied}');"
     ));
     drop(SqliteStore::open(&path).unwrap());
-    let conn = Connection::open(&path).unwrap();
-    let mut stmt = conn
-        .prepare("SELECT key FROM answers ORDER BY key")
-        .unwrap();
-    let keys: Vec<String> = stmt
-        .query_map([], |r| r.get(0))
-        .unwrap()
-        .map(|r| r.unwrap())
-        .collect();
-    // factum#42: the applied one's fingerprint went into its events' meta.
-    assert!(keys.is_empty(), "{keys:?}");
+    // factum#43: nothing is kept per key beside the log.
+    assert!(!has_answers(&path));
+}
+
+/// Whether the database still has an `answers` table.
+fn has_answers(path: &Path) -> bool {
+    let conn = Connection::open(path).unwrap();
+    let sql = "SELECT COUNT(*) > 0 FROM sqlite_master WHERE name = 'answers'";
+    conn.query_row(sql, [], |r| r.get(0)).unwrap()
 }
 
 /// Takes a database back to schema `version` with each answer kept as
@@ -177,7 +175,8 @@ fn with_copied_answers(path: &Path, version: u32, answers: &[(Uuid, Answer)]) {
         conn.execute_batch("DROP INDEX events_key").unwrap();
     }
     conn.execute_batch(&format!(
-        "DELETE FROM answers; PRAGMA user_version = {version};
+        "CREATE TABLE answers (key TEXT PRIMARY KEY, answer TEXT NOT NULL);
+         PRAGMA user_version = {version};
          UPDATE events SET meta = json_remove(meta, '$.fingerprint');"
     ))
     .unwrap();
@@ -265,10 +264,9 @@ async fn copies_answer_the_same_once_opened(version: u32) {
     let opened = SqliteStore::open(w.store.path()).unwrap();
     for (key, copy) in &copies {
         let answer = opened.answer(*key).await.unwrap();
-        // factum#41: one that wrote no events is no longer kept; one found
-        // after that step is a runner's, kept.
-        let empty = matches!(&copy.result, AnswerResult::Applied(e) if e.is_empty());
-        let wrote = !empty || version >= 5;
+        // factum#41/#43: one that wrote no events, or a refusal, is no
+        // longer kept: its key has no answer.
+        let wrote = matches!(&copy.result, AnswerResult::Applied(e) if !e.is_empty());
         assert_eq!(answer.as_ref(), wrote.then_some(copy), "{key}");
     }
     let again = w.engine("again").submit(placed).await.unwrap();
@@ -287,14 +285,9 @@ async fn copies_answer_the_same_once_opened(version: u32) {
             .events
             .is_empty()
     );
-    let conn = Connection::open(w.store.path()).unwrap();
-    let rows: u32 = conn
-        .query_row("SELECT COUNT(*) FROM answers", [], |r| r.get(0))
-        .unwrap();
-    assert_eq!(
-        rows,
-        if version >= 5 { 2 } else { 1 },
-        "only what no event gives"
+    assert!(
+        !has_answers(w.store.path()),
+        "nothing is kept beside the log"
     );
 }
 

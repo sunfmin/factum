@@ -10,7 +10,7 @@ use factum_core::{
 };
 
 use crate::{
-    Answer, Batch, Checkpoint, Claim, DeadLetter, Kept, Result, Snapshot, Store, Unit, apply_op,
+    Answer, Batch, Checkpoint, Claim, DeadLetter, Result, Snapshot, Store, Unit, apply_op,
     check_batch, check_unit, claim_row, op_target, read_answer, release_row, wake_row,
 };
 
@@ -38,7 +38,6 @@ struct Inner {
     log: Vec<Event>,
     /// Where in the log each key's events are: the index by key.
     keyed: HashMap<Uuid, Vec<usize>>,
-    answers: HashMap<Uuid, Kept>,
     work: BTreeMap<(WorkKind, Uuid), Row>,
     work_seq: u64,
     paces: HashMap<(String, String), Instant>,
@@ -59,7 +58,7 @@ impl Inner {
         check_unit(
             unit,
             |stream| Ok(self.version(stream)),
-            |key| Ok(self.answers.contains_key(&key) || !self.answered(key).is_empty()),
+            |key| Ok(!self.answered(key).is_empty()),
             |kind, id| Ok(self.work.get(&(kind, id)).and_then(|r| r.work.lease)),
         )
     }
@@ -167,7 +166,7 @@ impl Store for MemoryStore {
 
     async fn answer(&self, key: Uuid) -> Result<Option<Answer>> {
         let inner = self.lock();
-        read_answer(inner.answered(key), || Ok(inner.answers.get(&key).cloned()))
+        Ok(read_answer(inner.answered(key)))
     }
 
     async fn commit(&self, unit: Unit) -> Result<Vec<Event>> {
@@ -189,9 +188,6 @@ impl Store for MemoryStore {
                     .push(event.clone());
                 committed.push(event);
             }
-        }
-        if let Some((key, kept)) = unit.answer.and_then(|(k, a)| Some((k, Kept::of(&a)?))) {
-            inner.answers.insert(key, kept);
         }
         for change in unit.work {
             inner.change(change);
