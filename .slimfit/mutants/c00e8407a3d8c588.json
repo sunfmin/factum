@@ -1,0 +1,27 @@
+{
+  "tree": "2f18fd0016ada65393f96d4eab94b4c48c829daf+d1fba762150c532c",
+  "picker": "codex:01a203ad-5c1e-71a0-9902-4f78ffa0254a:default",
+  "author": "claude-code:9a947523-ce8b-5a85-b40f-691fb68861dc:opus",
+  "picks": {
+    "rust": [
+      {
+        "name": "crates/store/src/lib.rs:91:46: replace match guard !events.is_empty() with false in Kept::of",
+        "why": "Successful submissions would leave redundant answer rows while replay still reads the events first. The row-count assertion shown covers migration.",
+        "outcome": "killed",
+        "first_outcome": "survived"
+      },
+      {
+        "name": "crates/store/src/lib.rs:91:46: replace match guard !events.is_empty() with true in Kept::of",
+        "why": "A runner's eventless success would be discarded, which may only surface when a runner takes over and retries the same key.",
+        "outcome": "killed",
+        "first_outcome": "killed"
+      },
+      {
+        "name": "crates/store/src/memory.rs:62:54: replace || with && in Inner::check",
+        "why": "The memory store would accept a duplicate key at commit when its answer exists in only one place. Sequential engine replay can return before reaching that guard.",
+        "outcome": "killed",
+        "first_outcome": "survived"
+      }
+    ]
+  }
+}
