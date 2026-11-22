@@ -7,7 +7,7 @@ use factum::{
     Engine, Error, Event, Finished, Op, Options, Outcome, Query, Store, StreamId, Uuid, Value,
     Version,
 };
-use factum_core::{Work, WorkChange, WorkKind, start_key, step_key};
+use factum_core::{Recurring, Work, WorkChange, WorkKind, recurring_key, start_key, step_key};
 use factum_store::{AnswerResult, Batch, StoreError, Unit};
 use serde_json::json;
 
@@ -138,17 +138,25 @@ pub async fn a_key_replays_its_first_answer_and_refuses_reuse<B: Backend>(b: &B)
     other.params = json!({ "order": o, "total": 600 });
     assert_eq!(refused(e.submit(other).await), "key_reused");
     assert_eq!(e.history(&order(o)).await.unwrap().len(), 2);
+}
 
-    // A refusal is an answer too: the key answers it again, even once the
-    // command would now apply.
-    let later = id();
-    let early = sub("order.pay", json!({ "order": later, "charge": "cash" }));
+pub async fn a_refusal_keeps_nothing_and_a_resend_decides_again<B: Backend>(b: &B) {
+    let w = World::new(b);
+    let e = w.engine("a");
+    let o = id();
+    let early = sub("order.pay", json!({ "order": o, "charge": "cash" }));
     assert_eq!(refused(e.submit(early.clone()).await), "not_placed");
-    e.submit(sub("order.place", json!({ "order": later, "total": 1 })))
+    assert!(w.store.answer(early.key).await.unwrap().is_none());
+    e.submit(sub("order.place", json!({ "order": o, "total": 1 })))
         .await
         .unwrap();
-    assert_eq!(refused(e.submit(early).await), "not_placed");
-    assert_eq!(status(&e, later).await, "placed");
+    let applied = e.submit(early.clone()).await.unwrap();
+    assert!(!applied.replayed, "the key decided again");
+    assert_eq!(kinds(&applied.events), ["OrderPaid"]);
+    let again = e.engine_again(&w).submit(early).await.unwrap();
+    assert!(again.replayed);
+    assert_eq!(again.events, applied.events);
+    assert_eq!(count(&e, o, "OrderPaid").await, 1);
 }
 
 pub async fn a_fault_is_no_answer_and_the_key_decides_again<B: Backend>(b: &B) {
@@ -174,13 +182,12 @@ pub async fn a_fault_is_no_answer_and_the_key_decides_again<B: Backend>(b: &B) {
 
 pub async fn a_refusal_that_loses_its_key_answers_what_the_key_holds<B: Backend>(b: &B) {
     let w = World::new(b);
-    let (a, flaky) = w.flaky("a");
-    let other = w.engine("b");
     let o = id();
-    let s = sub("order.pay", json!({ "order": o, "charge": "cash" }));
-    let rival = s.clone();
-    // A refuses the payment, but before it records the refusal another
-    // writer places the order and pays it under the same key.
+    let (a, flaky) = w.flaky_with(pays(&w, o), "a");
+    let other = w.engine("b");
+    // The recurring payment is refused, but before it keeps the refusal for
+    // its period another writer places the order and pays it under that key.
+    let key = recurring_key("shop.pay", crate::START.0 / 1000);
     flaky.race_on(
         |u| {
             u.answer
@@ -192,14 +199,14 @@ pub async fn a_refusal_that_loses_its_key_answers_what_the_key_holds<B: Backend>
                 .submit(sub("order.place", json!({ "order": o, "total": 100 })))
                 .await
                 .unwrap();
+            let mut rival = sub("order.pay", json!({ "charge": "cash", "order": o }));
+            rival.key = key;
             other.submit(rival).await.unwrap();
         }),
     );
-    let first = a.submit(s.clone()).await.unwrap();
-    let again = w.engine("c").submit(s.clone()).await.unwrap();
-    assert!(again.replayed);
-    assert_eq!(first.events, again.events);
-    assert_eq!(kinds(&first.events), ["OrderPaid"]);
+    a.settle().await.unwrap();
+    let kept = w.store.answer(key).await.unwrap().unwrap();
+    assert!(matches!(kept.result, AnswerResult::Applied(_)), "{kept:?}");
     assert_eq!(count(&a, o, "OrderPaid").await, 1);
 }
 
@@ -423,6 +430,39 @@ pub async fn a_recurring_command_runs_once_per_period<B: Backend>(b: &B) {
     bb.settle().await.unwrap();
     a.settle().await.unwrap();
     assert_eq!(a.state(&tally).await.unwrap()["total"], 2);
+}
+
+/// The shop, also paying order `o` by cash once a minute.
+fn pays<B: Backend>(w: &World<'_, B>, o: Uuid) -> factum::Model {
+    w.shop(OrderList::default()).recurring(Recurring {
+        name: "shop.pay".into(),
+        command: "order.pay".into(),
+        params: json!({ "order": o, "charge": "cash" }),
+        every_seconds: 60,
+        offset_seconds: 0,
+    })
+}
+
+pub async fn a_refused_recurring_command_runs_once_per_period<B: Backend>(b: &B) {
+    let w = World::new(b);
+    let o = id();
+    let e = w.engine_with(pays(&w, o), "a");
+    e.settle().await.unwrap();
+    // Placed after its run was refused, the order is not paid this period,
+    // however many ticks come.
+    e.submit(sub("order.place", json!({ "order": o, "total": 1 })))
+        .await
+        .unwrap();
+    for _ in 0..5 {
+        w.advance(10_000);
+        e.settle().await.unwrap();
+    }
+    assert_eq!(status(&e, o).await, "placed");
+    w.advance(10_000);
+    e.settle().await.unwrap();
+    e.settle().await.unwrap();
+    assert_eq!(status(&e, o).await, "paid");
+    assert_eq!(count(&e, o, "OrderPaid").await, 1);
 }
 
 // ---- processes and actions ----

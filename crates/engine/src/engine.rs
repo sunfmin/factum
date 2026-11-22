@@ -88,7 +88,8 @@ pub(crate) fn rejected(code: &str, message: impl Into<String>) -> Error {
 pub struct Submission {
     pub command: String,
     pub params: Value,
-    /// Sending the same key again answers the first answer.
+    /// Sending the same key again answers the first applied answer; a
+    /// refusal keeps nothing, so a re-send decides again.
     pub key: Uuid,
     pub by: By,
 }
@@ -240,10 +241,18 @@ impl<S: Store> Engine<S> {
 
     /// Decides and records a command, or answers what its key answered.
     pub async fn submit(&self, submission: Submission) -> Result<Applied, Error> {
-        self.submit_at(submission, self.clock.now()).await
+        self.submit_at(submission, self.clock.now(), false).await
     }
 
-    pub(crate) async fn submit_at(&self, sub: Submission, now: Instant) -> Result<Applied, Error> {
+    /// Submits at `now`. A refusal is kept for the key only when `keep`:
+    /// factum's own runners (steps, schedules, recurring) keep theirs, so a
+    /// runner that took one over answers what the first decided.
+    pub(crate) async fn submit_at(
+        &self,
+        sub: Submission,
+        now: Instant,
+        keep: bool,
+    ) -> Result<Applied, Error> {
         let print = fingerprint(&sub.command, &sub.params);
         let mut races = Races::new();
         loop {
@@ -252,7 +261,7 @@ impl<S: Store> Engine<S> {
             }
             let (stream, agg, decided) = match self.decide(&sub, now).await {
                 Ok(d) => d,
-                Err(Error::Rejected(r)) => {
+                Err(Error::Rejected(r)) if keep => {
                     let unit = Unit {
                         answer: Some((
                             sub.key,

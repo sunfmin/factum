@@ -141,6 +141,27 @@ fn a_database_given_taken_over_by_hand_opens_unchanged() {
 }
 
 #[test]
+fn a_database_with_kept_refusals_keeps_none_once_opened() {
+    let refused = r#"{"fingerprint":"00000000-0000-0000-0000-000000000001","result":{"Rejected":{"code":"wait","message":"later"}}}"#;
+    let applied =
+        r#"{"fingerprint":"00000000-0000-0000-0000-000000000002","result":{"Applied":[]}}"#;
+    let path = old_database(&format!(
+        "INSERT INTO answers (key, answer) VALUES ('r', '{refused}'), ('a', '{applied}');"
+    ));
+    drop(SqliteStore::open(&path).unwrap());
+    let conn = Connection::open(&path).unwrap();
+    let mut stmt = conn
+        .prepare("SELECT key FROM answers ORDER BY key")
+        .unwrap();
+    let keys: Vec<String> = stmt
+        .query_map([], |r| r.get(0))
+        .unwrap()
+        .map(|r| r.unwrap())
+        .collect();
+    assert_eq!(keys, ["a"]);
+}
+
+#[test]
 fn a_database_of_a_newer_schema_is_refused_at_open() {
     let path = new_path();
     drop(SqliteStore::open(&path).unwrap());
