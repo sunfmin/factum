@@ -151,6 +151,7 @@ macro_rules! suite {
             an_answer_with_no_events_keeps_nothing_and_a_resend_decides_again,
             a_fault_is_no_answer_and_the_key_decides_again,
             a_refusal_that_loses_its_key_answers_what_the_key_holds,
+            a_recurring_run_another_runner_recorded_first_runs_once,
             a_plan_records_nothing,
             a_writer_that_read_an_old_version_decides_again,
             a_writer_that_loses_every_race_gives_up,

@@ -257,6 +257,32 @@ pub async fn a_refusal_that_loses_its_key_answers_what_the_key_holds<B: Backend>
     assert_eq!(ran[0].data["ok"], true, "{ran:?}");
 }
 
+pub async fn a_recurring_run_another_runner_recorded_first_runs_once<B: Backend>(b: &B) {
+    for placed in [true, false] {
+        let w = World::new(b);
+        let o = id();
+        let (a, flaky) = w.flaky_with(pays(&w, o), "a");
+        let other = w.engine_with(pays(&w, o), "b");
+        if placed {
+            a.submit(sub("order.place", json!({ "order": o, "total": 1 })))
+                .await
+                .unwrap();
+        }
+        // Before the run commits, another runner runs the period and records it.
+        let key = recurring_key("shop.pay", crate::START.0 / 1000);
+        flaky.race_on(
+            move |u| u.appends.iter().any(|a| a.stream == recurring_stream(key)),
+            Box::pin(async move {
+                other.settle().await.unwrap();
+            }),
+        );
+        a.settle().await.unwrap();
+        let ran = a.history(&recurring_stream(key)).await.unwrap();
+        assert_eq!(kinds(&ran), ["RecurringRan"], "placed {placed}");
+        assert_eq!(count(&a, o, "OrderPaid").await, usize::from(placed));
+    }
+}
+
 pub async fn a_plan_records_nothing<B: Backend>(b: &B) {
     let w = World::new(b);
     let e = w.engine("a");

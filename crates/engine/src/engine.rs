@@ -263,12 +263,6 @@ impl<S: Store> Engine<S> {
             let (result, mut unit, decided) = match self.store.answer(sub.key).await? {
                 Some(answer) => (replay(answer, print), Unit::default(), None),
                 None => match self.decide(&sub, now).await {
-                    Ok((_, _, (_, new))) if new.is_empty() && then.is_none() => {
-                        return Ok(Applied {
-                            events: Vec::new(),
-                            replayed: false,
-                        });
-                    }
                     Ok((stream, agg, (loaded, new))) => {
                         let unit = self.unit(Write {
                             stream: stream.clone(),
