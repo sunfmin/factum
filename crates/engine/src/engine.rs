@@ -304,8 +304,8 @@ impl<S: Store> Engine<S> {
                     by: sub.by.clone(),
                     key: Some(sub.key),
                     command: sub.command.clone(),
+                    fingerprint: Some(print),
                 },
-                fingerprint: Some(print),
                 work: Vec::new(),
                 guards: Vec::new(),
             };
@@ -374,8 +374,8 @@ impl<S: Store> Engine<S> {
     /// The one way events are written: numbered from `expected`, stamped
     /// with `meta` and their current type version, and committed with the
     /// work they imply (`effects`), the work given beside it, its guards
-    /// and, under a fingerprint, as the answer of `meta.key`. Every work row
-    /// a commit changes is thereby implied by an event committed with it.
+    /// and, under `meta.fingerprint`, as the answer of `meta.key`. Every work
+    /// row a commit changes is thereby implied by an event committed with it.
     pub(crate) async fn write(&self, w: Write) -> Result<Vec<Event>, StoreError> {
         let agg = self.model.aggregates.get(&w.stream.aggregate);
         let mut version = w.expected;
@@ -398,7 +398,8 @@ impl<S: Store> Engine<S> {
             .collect();
         let mut work: Vec<WorkChange> = events.iter().flat_map(effects).collect();
         work.extend(w.work);
-        let answer = w.fingerprint.zip(w.meta.key).map(|(fingerprint, key)| {
+        let (key, print) = (w.meta.key, w.meta.fingerprint);
+        let answer = key.zip(print).map(|(key, fingerprint)| {
             let result = AnswerResult::Applied(events.clone());
             (
                 key,
@@ -643,8 +644,8 @@ impl<S: Store> Engine<S> {
                 by: by.clone(),
                 key: None,
                 command: PROCESS.to_string(),
+                fingerprint: None,
             },
-            fingerprint: None,
             work,
             guards,
         };
@@ -733,8 +734,6 @@ pub(crate) struct Write {
     pub expected: Version,
     pub events: Vec<NewEvent>,
     pub meta: Meta,
-    /// Keeps the events as the answer of `meta.key`, under this fingerprint.
-    pub fingerprint: Option<Uuid>,
     /// Work beside the events' effects, such as a release or a pace.
     pub work: Vec<WorkChange>,
     /// Rows that must still be held under these leases.

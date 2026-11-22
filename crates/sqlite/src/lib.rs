@@ -24,7 +24,7 @@ use factum_core::{
 };
 use factum_store::{
     Answer, Batch, Checkpoint, Claim, DeadLetter, Kept, Result, Snapshot, Store, StoreError, Unit,
-    apply_op, check_batch, check_unit, claim_row, op_target, release_row, wake_row,
+    apply_op, check_batch, check_unit, claim_row, op_target, read_answer, release_row, wake_row,
 };
 use rusqlite::types::Value as Sql;
 use rusqlite::{
@@ -105,21 +105,52 @@ const STEPS: &[fn(&Transaction) -> rusqlite::Result<()>] = &[
     },
     // factum#40: an applied answer is read from its events by key, not kept
     // as a copy; only its fingerprint and stream, or a refusal, are kept.
-    |tx| tx.execute_batch(ANSWERS_READ_BY_KEY),
+    |tx| {
+        tx.execute_batch(AS_KEPT)?;
+        tx.execute_batch("CREATE INDEX events_key ON events (json_extract(meta, '$.key'));")
+    },
     // factum#41: an answer that wrote no events keeps nothing for its key
     // any more. A runner's such row goes too: at worst a recurring command
     // runs once more in the period this opens in.
     |tx| tx.execute_batch("DELETE FROM answers WHERE json_type(answer, '$.result.Ok') = 'null'"),
+    // factum#42: an answer that wrote events is read from them alone.
+    // Rows an older binary wrote in the shape before factum#40 after this
+    // database had left it (seen on factorium's host) are first brought to
+    // it, as that step did.
+    |tx| {
+        let old = "json_type(answer, '$.result.Applied') IS NOT NULL OR json_type(answer, '$.result.Rejected') IS NOT NULL";
+        tx.execute_batch(&format!("{AS_KEPT} WHERE {old}"))?;
+        tx.execute_batch(FINGERPRINT_IN_META)
+    },
 ];
 
-/// Each answer becomes the `Kept` it stands for, as JSON.
-const ANSWERS_READ_BY_KEY: &str = "
+/// Each key's fingerprint, kept beside the events it wrote (`{"Ok":
+/// stream}`), is written once into their meta, as the code since writes it;
+/// then the row goes. Nothing else of an event changes: the fingerprint is
+/// the one fact of it that was kept elsewhere.
+const FINGERPRINT_IN_META: &str = "
+UPDATE events SET meta = json_set(meta, '$.fingerprint', k.fingerprint)
+FROM (SELECT key, json_extract(answer, '$.fingerprint') AS fingerprint,
+             json_extract(answer, '$.result.Ok') AS stream
+      FROM answers WHERE json_type(answer, '$.result.Ok') = 'text') AS k
+WHERE json_extract(events.meta, '$.key') = k.key AND events.stream = k.stream;
+DELETE FROM answers WHERE json_type(answer, '$.result.Ok') = 'text';
+";
+
+/// Whether a key has an answer: events committed under it with a
+/// fingerprint, or a row kept for it.
+const ANSWERED: &str = "SELECT EXISTS (SELECT 1 FROM answers WHERE key = ?1) OR EXISTS (
+    SELECT 1 FROM events INDEXED BY events_key
+    WHERE json_extract(meta, '$.key') = ?1 AND json_extract(meta, '$.fingerprint') IS NOT NULL)";
+
+/// Each answer kept as a copy (before factum#40) becomes what factum#40
+/// kept for it, as JSON: its fingerprint and its events' stream (null if
+/// none), or its refusal.
+const AS_KEPT: &str = "
 UPDATE answers SET answer = json_object('fingerprint', json_extract(answer, '$.fingerprint'), 'result',
     CASE WHEN json_extract(answer, '$.result.Rejected') IS NOT NULL
          THEN json_object('Err', json_extract(answer, '$.result.Rejected'))
-         ELSE json_object('Ok', json_extract(answer, '$.result.Applied[0].stream')) END);
-CREATE INDEX events_key ON events (json_extract(meta, '$.key'));
-";
+         ELSE json_object('Ok', json_extract(answer, '$.result.Applied[0].stream')) END)";
 
 fn add_column(tx: &Transaction, table: &str, column: &str, def: &str) -> rusqlite::Result<()> {
     let sql = "SELECT COUNT(*) > 0 FROM pragma_table_info(?1) WHERE name = ?2";
@@ -563,13 +594,12 @@ impl Store for SqliteStore {
     async fn answer(&self, key: Uuid) -> Result<Option<Answer>> {
         self.run(move |c| {
             let key = key.to_string();
-            let sql = "SELECT answer FROM answers WHERE key = ?1";
-            let found: Option<String> = c.query_row(sql, [&key], |r| r.get(0)).optional().map_err(backend)?;
-            let Some(kept) = found.map(|a| parse::<Kept>(&a)).transpose()? else {
-                return Ok(None);
-            };
-            let sql = format!("SELECT {EVENT_COLUMNS} FROM events INDEXED BY events_key WHERE json_extract(meta, '$.key') = ?1 AND stream = ?2 ORDER BY version");
-            kept.answer(|s| events(c, &sql, params![key, s.to_string()])).map(Some)
+            let sql = format!("SELECT {EVENT_COLUMNS} FROM events INDEXED BY events_key WHERE json_extract(meta, '$.key') = ?1 ORDER BY seq");
+            read_answer(events(c, &sql, [&key])?, || {
+                let sql = "SELECT answer FROM answers WHERE key = ?1";
+                let found: Option<String> = c.query_row(sql, [&key], |r| r.get(0)).optional().map_err(backend)?;
+                found.map(|a| parse::<Kept>(&a)).transpose()
+            })
         })
         .await
     }
@@ -584,10 +614,7 @@ impl Store for SqliteStore {
                         .map_err(backend)
                 },
                 |key| {
-                    tx.query_row("SELECT 1 FROM answers WHERE key = ?1", [key.to_string()], |_| Ok(()))
-                        .optional()
-                        .map(|f| f.is_some())
-                        .map_err(backend)
+                    tx.query_row(ANSWERED, [key.to_string()], |r| r.get(0)).map_err(backend)
                 },
                 |kind, id| Ok(lease_of(tx, kind, id)?.and_then(|l| l.parse().ok())),
             )?;
@@ -604,8 +631,8 @@ impl Store for SqliteStore {
                     committed.push(e);
                 }
             }
-            if let Some((key, answer)) = unit.answer {
-                tx.execute("INSERT INTO answers (key, answer) VALUES (?1, ?2)", params![key.to_string(), json(&Kept::of(&answer))?])
+            if let Some((key, kept)) = unit.answer.and_then(|(k, a)| Some((k, Kept::of(&a)?))) {
+                tx.execute("INSERT INTO answers (key, answer) VALUES (?1, ?2)", params![key.to_string(), json(&kept)?])
                 .map_err(backend)?;
             }
             for c in &unit.work {

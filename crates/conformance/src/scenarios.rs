@@ -4,10 +4,12 @@
 use std::sync::atomic::Ordering;
 
 use factum::{
-    Engine, Error, Event, Finished, Op, Options, Outcome, Query, Store, StreamId, Uuid, Value,
-    Version,
+    Engine, Error, Event, Finished, Op, Options, Outcome, Query, Store, StreamId, Submission, Uuid,
+    Value, Version,
 };
-use factum_core::{Recurring, Work, WorkChange, WorkKind, recurring_key, start_key, step_key};
+use factum_core::{
+    Recurring, Work, WorkChange, WorkKind, recurring_key, schedule_key, start_key, step_key,
+};
 use factum_store::{AnswerResult, Batch, StoreError, Unit};
 use serde_json::json;
 
@@ -411,6 +413,14 @@ pub async fn a_scheduled_command_runs_once_when_due<B: Backend>(b: &B) {
     a.settle().await.unwrap();
     assert_eq!(status(&a, o).await, "cancelled");
     assert_eq!(count(&a, o, "OrderCancelled").await, 1);
+    // Its key answers what it wrote, not the ScheduleRan recorded beside.
+    let scheduled = a.history(&order(o)).await.unwrap();
+    let scheduled = scheduled.iter().find(|ev| ev.kind == "CommandScheduled");
+    let key = schedule_key(scheduled.unwrap().id);
+    let again = Submission::new("order.expire", json!({ "order": o }), key, ann());
+    let again = a.submit(again).await.unwrap();
+    assert!(again.replayed);
+    assert_eq!(kinds(&again.events), ["OrderCancelled"]);
 }
 
 pub async fn a_refused_scheduled_command_is_recorded_not_retried<B: Backend>(b: &B) {

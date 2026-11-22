@@ -74,39 +74,57 @@ pub enum AnswerResult {
     Rejected(Rejection),
 }
 
-/// What a store keeps for a key: the fingerprint and, for an applied
-/// answer, the stream its events are in (none if it wrote none), or the
-/// refusal. The events are not kept twice: they are read back from that
-/// stream by the key in their meta.
+/// What a store keeps for a key whose answer wrote no events: its
+/// fingerprint and, if it was one, the refusal. Only factum's runners keep
+/// such answers. An answer that wrote events keeps nothing beside them: it
+/// is read from them, by the key and fingerprint in their meta.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct Kept {
     pub fingerprint: Uuid,
-    pub result: std::result::Result<Option<StreamId>, Rejection>,
+    pub result: std::result::Result<(), Rejection>,
 }
 
 impl Kept {
-    pub fn of(answer: &Answer) -> Kept {
-        Kept {
-            fingerprint: answer.fingerprint,
-            result: match &answer.result {
-                AnswerResult::Applied(events) => Ok(events.first().map(|e| e.stream.clone())),
-                AnswerResult::Rejected(r) => Err(r.clone()),
-            },
-        }
-    }
-
-    /// The answer, reading the events its stream holds under the key.
-    pub fn answer(self, events: impl FnOnce(&StreamId) -> Result<Vec<Event>>) -> Result<Answer> {
-        let result = match self.result {
-            Ok(Some(stream)) => AnswerResult::Applied(events(&stream)?),
-            Ok(None) => AnswerResult::Applied(Vec::new()),
-            Err(r) => AnswerResult::Rejected(r),
+    /// What a store keeps of the answer: nothing if it wrote events.
+    pub fn of(answer: &Answer) -> Option<Kept> {
+        let result = match &answer.result {
+            AnswerResult::Applied(events) if !events.is_empty() => return None,
+            AnswerResult::Applied(_) => Ok(()),
+            AnswerResult::Rejected(r) => Err(r.clone()),
         };
-        Ok(Answer {
-            fingerprint: self.fingerprint,
+        Some(Kept {
+            fingerprint: answer.fingerprint,
             result,
         })
     }
+}
+
+/// A key's answer, the way every store must read it: of `events`, those
+/// committed under the key in commit order, the ones whose meta carries a
+/// fingerprint are its applied answer (an event the engine wrote beside it
+/// under the key, such as `ScheduleRan`, carries none); with none, what is
+/// `kept` for the key.
+pub fn read_answer(
+    events: Vec<Event>,
+    kept: impl FnOnce() -> Result<Option<Kept>>,
+) -> Result<Option<Answer>> {
+    let events: Vec<Event> = events
+        .into_iter()
+        .filter(|e| e.meta.fingerprint.is_some())
+        .collect();
+    if let Some(fingerprint) = events.first().and_then(|e| e.meta.fingerprint) {
+        return Ok(Some(Answer {
+            fingerprint,
+            result: AnswerResult::Applied(events),
+        }));
+    }
+    Ok(kept()?.map(|k| Answer {
+        fingerprint: k.fingerprint,
+        result: match k.result {
+            Ok(()) => AnswerResult::Applied(Vec::new()),
+            Err(r) => AnswerResult::Rejected(r),
+        },
+    }))
 }
 
 /// Events for one stream, appended only if it is still at `expected`.
@@ -210,14 +228,15 @@ pub trait Store: Send + Sync + 'static {
         after: Version,
     ) -> impl Future<Output = Result<Vec<Event>>> + Send;
 
-    /// What the key answers. An applied answer is its events as committed
-    /// (with positions), read from their stream by the key in their meta;
-    /// only what the events cannot give ([`Kept`]) is kept beside them.
+    /// What the key answers ([`read_answer`]): the events committed under
+    /// it (with positions), found by the key in their meta, or what is
+    /// [`Kept`] for a key whose answer wrote none.
     fn answer(&self, key: Uuid) -> impl Future<Output = Result<Option<Answer>>> + Send;
 
     /// Writes the unit, answering its events as committed (with positions);
     /// of its answer, only what [`Kept::of`] takes is kept.
-    /// `Conflict` if a stream moved, `KeyTaken` if the key has an answer,
+    /// `Conflict` if a stream moved, `KeyTaken` if the key has an answer
+    /// (events committed under it with a fingerprint, or a kept one),
     /// `LeaseLost` if a guard or release does not hold.
     fn commit(&self, unit: Unit) -> impl Future<Output = Result<Vec<Event>>> + Send;
 

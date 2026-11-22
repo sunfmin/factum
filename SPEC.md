@@ -17,10 +17,10 @@ approval and an entry here.
 
 | # | Concept | What it is |
 |---|---|---|
-| 1 | **Event** | A fact: stream, version, stored type name, type version, data (JSON), meta (`now`, `by`, idempotency `key`, `command`), an id (UUIDv7) and, once committed, its position in the log. Never edited. |
+| 1 | **Event** | A fact: stream, version, stored type name, type version, data (JSON), meta (`now`, `by`, idempotency `key`, `command` and, on the events a submission wrote, its `fingerprint`: command and params), an id (UUIDv7) and, once committed, its position in the log. Never edited. |
 | 2 | **Stream** | `<aggregate>/<uuid>`: the events of one thing, numbered 1, 2, 3… with no gap. An aggregate may declare **ending** event types; a stream whose last domain event ends it refuses every later command (`ended`); the engine's own `CommandScheduled`, appended after a command's domain events, is not a domain event and is skipped. |
 | 3 | **Command** | A named request to change one stream. Its rules are `decide(state, params, by, now) → events \| Rejection`, pure; it may also schedule commands. State is folded from the stream by a pure `evolve`. Older event shapes are **upcast** on read, so decide, evolve and projections see only the current shape. |
-| 4 | **Submission** | A command sent under an idempotency key. The same key with the same command and params answers the first answer that wrote events; with others it is refused (`key_reused`). An answer is kept only for a submission that wrote events, or a runner's: a refusal, or an applied answer with no events, like a fault (code that cannot read its state or write an event), keeps nothing for the key: it wrote nothing, so a re-send decides again on fresh state at its own `now`, and can apply nothing twice. factum's own runners keep theirs: a step's, a schedule's or a recurring period's refusal or answer with no events is kept for its key, so a runner that takes one over answers what the first decided. A writer that read an old version decides again on fresh state at the same `now`. **Plan** is decide without commit. |
+| 4 | **Submission** | A command sent under an idempotency key. The same key with the same command and params answers the first answer that wrote events; with others it is refused (`key_reused`). An answer that wrote events is those events, read by the key and fingerprint in their meta, and nothing is kept beside them; an event the engine writes under a command's key elsewhere (a schedule's `ScheduleRan`) carries no fingerprint and is no part of the answer. An answer is kept only for a submission that wrote events, or a runner's: a refusal, or an applied answer with no events, like a fault (code that cannot read its state or write an event), keeps nothing for the key: it wrote nothing, so a re-send decides again on fresh state at its own `now`, and can apply nothing twice. factum's own runners keep theirs: a step's, a schedule's or a recurring period's refusal or answer with no events is kept for its key (its fingerprint and refusal: the only thing a store keeps per key), so a runner that takes one over answers what the first decided. A writer that read an old version decides again on fresh state at the same `now`. **Plan** is decide without commit. |
 | 5 | **Process** | Work across streams. Its progress is its own stream, `process/<id>` (`ProcessStarted`, `StepRequested`, `StepRecorded`, `ProcessFinished`, which ends it). `next(input, progress) → Run(command) \| Call(action) \| Queue(task) \| Await(event, within) \| Finish`, pure. A step's key is `UUIDv5(process, step)`, so a step re-run after a crash is replayed, not repeated. A process may start by itself on an event; its input is that event as `Recorded` (`id`, `stream`, `type`, `data`), the shape a `Run` or `Await` step's outcome gives events in too. One runner advances a process at a time, under a lease. |
 | 6 | **Action** | A call to another system, requested by a step through an **outbox**: the request and its delivery row commit together. Delivered at least once under the step's key, or **at most once**, in which case a call whose answer was lost ends `Unknown` for `next` to reconcile. Each action declares its retry schedule (attempts, backoff, factor, cap, jitter) and timeout. A call whose lease runs out (its runner died, or it outlived its timeout) is taken over and made again only while its attempts last: taken over after the last, it ends `Unknown`, as an at-most-once one does, since that attempt may have done the work; it ends `Failed` only when its last attempt answered an error. A call is made only under its claim's lease, renewed from the clock just before it: a runner whose lease was taken over (an earlier call of its tick outlived the timeout) does not make it, so no call lands after another holder recorded the step. |
 | 7 | **Task** | Long work a step queues and a **worker** pulls: claim under a lease, heartbeat to keep it (never past the type's timeout), result or failure. Declared attempts and backoff; ends as an action does once they are spent (`Unknown` if the last attempt's lease ran out, `Failed` if it answered an error); may be done at most once; may be cancelled; may carry an **ordering key** (one at a time per key, in order, paced). |
@@ -86,12 +86,11 @@ short transaction; none holds a lock while the caller works.
   read, the submission's key and answer, the work changes the events
   imply, and lease guards. All of it or none: `Conflict`, `KeyTaken` or
   `LeaseLost` otherwise.
-- `answer(key)` — an applied answer is read from the log: the events of
-  its stream whose meta carries the key, as committed (with positions),
-  found by an index on the key. Beside them a key keeps only what they
-  cannot give: the fingerprint, the stream (the engine's `ScheduleRan`
-  carries its key in another), or a runner's kept refusal. An event is
-  never kept twice.
+- `answer(key)` — an applied answer is read from the log alone: the events
+  whose meta carries the key and a fingerprint, as committed (with
+  positions), found by an index on the key; the fingerprint is theirs. A
+  key keeps a row only for what no event gives: a runner's kept refusal or
+  answer with no events (§1, Submission). An event is never kept twice.
 - `claim(kind, names, now, holder, lease, limit)` — due rows no live lease
   holds, oldest due first; of rows sharing a name and ordering key only the
   first put, and not before its pace. A claim takes a new lease, counts an
@@ -121,6 +120,10 @@ knows the schema version it finds and brings it up to its own when it is
 opened, one step per schema change, all in one transaction; a schema
 newer than it knows is refused at open (`NewerSchema`), before any call.
 A released step is never edited: a change to the schema is a new step.
+A step never changes what an event says. Once, it added to events' meta
+what the store already held of them elsewhere: SQLite's step 6
+(factum#42) wrote each kept `{fingerprint, stream}` row's fingerprint into
+the meta of the key's events in that stream, then dropped the row.
 
 Each store implements these as its backend allows: SQLite's single writer
 makes commit order the sequence order, and Postgres will need an
