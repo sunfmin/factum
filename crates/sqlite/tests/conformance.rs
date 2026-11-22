@@ -172,12 +172,8 @@ fn a_database_with_kept_refusals_keeps_none_once_opened() {
 /// JSON copy, an applied one's events copied whole.
 fn with_copied_answers(path: &Path, answers: &[(Uuid, Answer)]) {
     let conn = Connection::open(path).unwrap();
-    conn.execute_batch(
-        "DROP INDEX events_key; DROP TABLE answers;
-         CREATE TABLE answers (key TEXT PRIMARY KEY, answer TEXT NOT NULL);
-         PRAGMA user_version = 3;",
-    )
-    .unwrap();
+    conn.execute_batch("DROP INDEX events_key; DELETE FROM answers; PRAGMA user_version = 3;")
+        .unwrap();
     for (key, answer) in answers {
         conn.execute(
             "INSERT INTO answers (key, answer) VALUES (?1, ?2)",

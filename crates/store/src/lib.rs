@@ -78,7 +78,7 @@ pub enum AnswerResult {
 /// answer, the stream its events are in (none if it wrote none), or the
 /// refusal. The events are not kept twice: they are read back from that
 /// stream by the key in their meta.
-#[derive(Clone, Debug, PartialEq)]
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct Kept {
     pub fingerprint: Uuid,
     pub result: std::result::Result<Option<StreamId>, Rejection>,

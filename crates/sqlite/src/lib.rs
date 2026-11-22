@@ -19,8 +19,8 @@ use std::path::{Path, PathBuf};
 use std::time::Duration;
 
 use factum_core::{
-    Event, Instant, Meta, Position, Query, Rejection, RowOp, StreamId, Table, Uuid, Value, Version,
-    Work, WorkChange, WorkKind,
+    Event, Instant, Meta, Position, Query, RowOp, StreamId, Table, Uuid, Value, Version, Work,
+    WorkChange, WorkKind,
 };
 use factum_store::{
     Answer, Batch, Checkpoint, Claim, DeadLetter, Kept, Result, Snapshot, Store, StoreError, Unit,
@@ -108,14 +108,12 @@ const STEPS: &[fn(&Transaction) -> rusqlite::Result<()>] = &[
     |tx| tx.execute_batch(ANSWERS_READ_BY_KEY),
 ];
 
+/// Each answer becomes the `Kept` it stands for, as JSON.
 const ANSWERS_READ_BY_KEY: &str = "
-CREATE TABLE answers_kept (key TEXT PRIMARY KEY, fingerprint TEXT NOT NULL, stream TEXT, rejection TEXT);
-INSERT INTO answers_kept (key, fingerprint, stream, rejection)
-    SELECT key, json_extract(answer, '$.fingerprint'), json_extract(answer, '$.result.Applied[0].stream'),
-           json_extract(answer, '$.result.Rejected')
-    FROM answers;
-DROP TABLE answers;
-ALTER TABLE answers_kept RENAME TO answers;
+UPDATE answers SET answer = json_object('fingerprint', json_extract(answer, '$.fingerprint'), 'result',
+    CASE WHEN json_extract(answer, '$.result.Rejected') IS NOT NULL
+         THEN json_object('Err', json_extract(answer, '$.result.Rejected'))
+         ELSE json_object('Ok', json_extract(answer, '$.result.Applied[0].stream')) END);
 CREATE INDEX events_key ON events (json_extract(meta, '$.key'));
 ";
 
@@ -561,17 +559,11 @@ impl Store for SqliteStore {
     async fn answer(&self, key: Uuid) -> Result<Option<Answer>> {
         self.run(move |c| {
             let key = key.to_string();
-            let sql = "SELECT fingerprint, stream, rejection FROM answers WHERE key = ?1";
-            let row = |r: &Row| Ok((r.get::<_, String>(0)?, r.get::<_, Option<String>>(1)?, r.get::<_, Option<String>>(2)?));
-            let found = c.query_row(sql, [&key], row).optional().map_err(backend)?;
-            let Some((fingerprint, stream, rejection)) = found else {
+            let sql = "SELECT answer FROM answers WHERE key = ?1";
+            let found: Option<String> = c.query_row(sql, [&key], |r| r.get(0)).optional().map_err(backend)?;
+            let Some(kept) = found.map(|a| parse::<Kept>(&a)).transpose()? else {
                 return Ok(None);
             };
-            let result = match rejection {
-                Some(r) => Err(parse::<Rejection>(&r)?),
-                None => Ok(stream.map(StreamId::try_from).transpose().map_err(backend)?),
-            };
-            let kept = Kept { fingerprint: uuid(&fingerprint)?, result };
             let sql = format!("SELECT {EVENT_COLUMNS} FROM events INDEXED BY events_key WHERE json_extract(meta, '$.key') = ?1 AND stream = ?2 ORDER BY version");
             kept.answer(|s| events(c, &sql, params![key, s.to_string()])).map(Some)
         })
@@ -609,15 +601,7 @@ impl Store for SqliteStore {
                 }
             }
             if let Some((key, answer)) = unit.answer {
-                let kept = Kept::of(&answer);
-                let (stream, rejection) = match &kept.result {
-                    Ok(stream) => (stream.as_ref().map(StreamId::to_string), None),
-                    Err(r) => (None, Some(json(r)?)),
-                };
-                tx.execute(
-                    "INSERT INTO answers (key, fingerprint, stream, rejection) VALUES (?1, ?2, ?3, ?4)",
-                    params![key.to_string(), kept.fingerprint.to_string(), stream, rejection],
-                )
+                tx.execute("INSERT INTO answers (key, answer) VALUES (?1, ?2)", params![key.to_string(), json(&Kept::of(&answer))?])
                 .map_err(backend)?;
             }
             for c in &unit.work {
