@@ -23,9 +23,8 @@ use factum_core::{
     WorkChange, WorkKind,
 };
 use factum_store::{
-    Answer, Batch, Checkpoint, Claim, DeadLetter, Result, Snapshot, Store, StoreError, Unit,
-    apply_op, check_batch, check_unit, claim_row, committed_answer, op_target, release_row,
-    wake_row,
+    Answer, Batch, Checkpoint, Claim, DeadLetter, Kept, Result, Snapshot, Store, StoreError, Unit,
+    apply_op, check_batch, check_unit, claim_row, op_target, release_row, wake_row,
 };
 use rusqlite::types::Value as Sql;
 use rusqlite::{
@@ -104,7 +103,19 @@ const STEPS: &[fn(&Transaction) -> rusqlite::Result<()>] = &[
             "DELETE FROM answers WHERE json_extract(answer, '$.result.Rejected') IS NOT NULL",
         )
     },
+    // factum#40: an applied answer is read from its events by key, not kept
+    // as a copy; only its fingerprint and stream, or a refusal, are kept.
+    |tx| tx.execute_batch(ANSWERS_READ_BY_KEY),
 ];
+
+/// Each answer becomes the `Kept` it stands for, as JSON.
+const ANSWERS_READ_BY_KEY: &str = "
+UPDATE answers SET answer = json_object('fingerprint', json_extract(answer, '$.fingerprint'), 'result',
+    CASE WHEN json_extract(answer, '$.result.Rejected') IS NOT NULL
+         THEN json_object('Err', json_extract(answer, '$.result.Rejected'))
+         ELSE json_object('Ok', json_extract(answer, '$.result.Applied[0].stream')) END);
+CREATE INDEX events_key ON events (json_extract(meta, '$.key'));
+";
 
 fn add_column(tx: &Transaction, table: &str, column: &str, def: &str) -> rusqlite::Result<()> {
     let sql = "SELECT COUNT(*) > 0 FROM pragma_table_info(?1) WHERE name = ?2";
@@ -547,15 +558,14 @@ impl Store for SqliteStore {
 
     async fn answer(&self, key: Uuid) -> Result<Option<Answer>> {
         self.run(move |c| {
-            let found: Option<String> = c
-                .query_row(
-                    "SELECT answer FROM answers WHERE key = ?1",
-                    [key.to_string()],
-                    |r| r.get(0),
-                )
-                .optional()
-                .map_err(backend)?;
-            found.map(|a| parse(&a)).transpose()
+            let key = key.to_string();
+            let sql = "SELECT answer FROM answers WHERE key = ?1";
+            let found: Option<String> = c.query_row(sql, [&key], |r| r.get(0)).optional().map_err(backend)?;
+            let Some(kept) = found.map(|a| parse::<Kept>(&a)).transpose()? else {
+                return Ok(None);
+            };
+            let sql = format!("SELECT {EVENT_COLUMNS} FROM events INDEXED BY events_key WHERE json_extract(meta, '$.key') = ?1 AND stream = ?2 ORDER BY version");
+            kept.answer(|s| events(c, &sql, params![key, s.to_string()])).map(Some)
         })
         .await
     }
@@ -590,10 +600,9 @@ impl Store for SqliteStore {
                     committed.push(e);
                 }
             }
-            if let Some((key, mut answer)) = unit.answer {
-                committed_answer(&mut answer, &committed);
-                tx.execute("INSERT INTO answers (key, answer) VALUES (?1, ?2)", params![key.to_string(), json(&answer)?])
-                    .map_err(backend)?;
+            if let Some((key, answer)) = unit.answer {
+                tx.execute("INSERT INTO answers (key, answer) VALUES (?1, ?2)", params![key.to_string(), json(&Kept::of(&answer))?])
+                .map_err(backend)?;
             }
             for c in &unit.work {
                 change(tx, c)?;

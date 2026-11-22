@@ -74,6 +74,41 @@ pub enum AnswerResult {
     Rejected(Rejection),
 }
 
+/// What a store keeps for a key: the fingerprint and, for an applied
+/// answer, the stream its events are in (none if it wrote none), or the
+/// refusal. The events are not kept twice: they are read back from that
+/// stream by the key in their meta.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct Kept {
+    pub fingerprint: Uuid,
+    pub result: std::result::Result<Option<StreamId>, Rejection>,
+}
+
+impl Kept {
+    pub fn of(answer: &Answer) -> Kept {
+        Kept {
+            fingerprint: answer.fingerprint,
+            result: match &answer.result {
+                AnswerResult::Applied(events) => Ok(events.first().map(|e| e.stream.clone())),
+                AnswerResult::Rejected(r) => Err(r.clone()),
+            },
+        }
+    }
+
+    /// The answer, reading the events its stream holds under the key.
+    pub fn answer(self, events: impl FnOnce(&StreamId) -> Result<Vec<Event>>) -> Result<Answer> {
+        let result = match self.result {
+            Ok(Some(stream)) => AnswerResult::Applied(events(&stream)?),
+            Ok(None) => AnswerResult::Applied(Vec::new()),
+            Err(r) => AnswerResult::Rejected(r),
+        };
+        Ok(Answer {
+            fingerprint: self.fingerprint,
+            result,
+        })
+    }
+}
+
 /// Events for one stream, appended only if it is still at `expected`.
 #[derive(Clone, Debug)]
 pub struct Append {
@@ -175,10 +210,13 @@ pub trait Store: Send + Sync + 'static {
         after: Version,
     ) -> impl Future<Output = Result<Vec<Event>>> + Send;
 
+    /// What the key answers. An applied answer is its events as committed
+    /// (with positions), read from their stream by the key in their meta;
+    /// only what the events cannot give ([`Kept`]) is kept beside them.
     fn answer(&self, key: Uuid) -> impl Future<Output = Result<Option<Answer>>> + Send;
 
     /// Writes the unit, answering its events as committed (with positions);
-    /// an applied answer is kept with those positions too.
+    /// of its answer, only what [`Kept::of`] takes is kept.
     /// `Conflict` if a stream moved, `KeyTaken` if the key has an answer,
     /// `LeaseLost` if a guard or release does not hold.
     fn commit(&self, unit: Unit) -> impl Future<Output = Result<Vec<Event>>> + Send;
@@ -329,18 +367,6 @@ pub fn check_batch(
         }
     }
     Ok(())
-}
-
-/// Gives an applied answer's events the positions they were committed at:
-/// a replay answers exactly what the first submission did.
-pub fn committed_answer(answer: &mut Answer, committed: &[Event]) {
-    if let AnswerResult::Applied(events) = &mut answer.result {
-        for e in events.iter_mut() {
-            if let Some(c) = committed.iter().find(|c| c.id == e.id) {
-                e.position = c.position;
-            }
-        }
-    }
 }
 
 /// Applies one row op to a row, the way every store must.

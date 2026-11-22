@@ -10,7 +10,7 @@ use factum_core::{
 };
 
 use crate::{
-    Answer, Batch, Checkpoint, Claim, DeadLetter, Result, Snapshot, Store, Unit, apply_op,
+    Answer, Batch, Checkpoint, Claim, DeadLetter, Kept, Result, Snapshot, Store, Unit, apply_op,
     check_batch, check_unit, claim_row, op_target, release_row, wake_row,
 };
 
@@ -36,7 +36,7 @@ struct Row {
 struct Inner {
     streams: HashMap<StreamId, Vec<Event>>,
     log: Vec<Event>,
-    answers: HashMap<Uuid, Answer>,
+    answers: HashMap<Uuid, Kept>,
     work: BTreeMap<(WorkKind, Uuid), Row>,
     work_seq: u64,
     paces: HashMap<(String, String), Instant>,
@@ -157,7 +157,17 @@ impl Store for MemoryStore {
     }
 
     async fn answer(&self, key: Uuid) -> Result<Option<Answer>> {
-        Ok(self.lock().answers.get(&key).cloned())
+        let inner = self.lock();
+        let of_key = |s: &StreamId| {
+            let events = inner.streams[s].iter().filter(|e| e.meta.key == Some(key));
+            Ok(events.cloned().collect())
+        };
+        inner
+            .answers
+            .get(&key)
+            .cloned()
+            .map(|k| k.answer(of_key))
+            .transpose()
     }
 
     async fn commit(&self, unit: Unit) -> Result<Vec<Event>> {
@@ -176,9 +186,8 @@ impl Store for MemoryStore {
                 committed.push(event);
             }
         }
-        if let Some((key, mut answer)) = unit.answer {
-            crate::committed_answer(&mut answer, &committed);
-            inner.answers.insert(key, answer);
+        if let Some((key, answer)) = unit.answer {
+            inner.answers.insert(key, Kept::of(&answer));
         }
         for change in unit.work {
             inner.change(change);
