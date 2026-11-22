@@ -25,7 +25,8 @@ pub use process::{
 };
 pub use query::{Filter, Op, Order, Query, Scalar, Table, answer, compare, holds, is_name};
 pub use work::{
-    Call, SCHEDULE_RAN, SCHEDULED, Wait, Work, WorkChange, WorkKind, effects, schedule_stream,
+    Call, RECURRING_RAN, SCHEDULE_RAN, SCHEDULED, Wait, Work, WorkChange, WorkKind, effects,
+    recurring_stream, schedule_stream,
 };
 
 pub use serde_json::Value;

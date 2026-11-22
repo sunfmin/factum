@@ -259,6 +259,28 @@ impl Command for PayWhenPlaced {
     }
 }
 
+/// Asks for `order.pay_when_placed` of the order later, recording nothing
+/// else.
+pub struct PayLater;
+
+impl Command for PayLater {
+    const NAME: &'static str = "order.pay_later";
+    type Aggregate = Orders;
+    type Params = OrderRef;
+    fn stream(p: &OrderRef) -> Uuid {
+        p.order
+    }
+    fn decide(
+        _: &Order,
+        p: &OrderRef,
+        _: &By,
+        now: Instant,
+    ) -> Result<Decision<OrderEvent>, Rejection> {
+        let pay = json!({ "order": p.order, "charge": "cash" });
+        Ok(Decision::from(Vec::new()).schedule(now.plus(EXPIRES_MS), "order.pay_when_placed", pay))
+    }
+}
+
 fn placed(s: &Order) -> Result<(), Rejection> {
     if s.status == "placed" {
         Ok(())
@@ -499,6 +521,30 @@ impl Process for ReceiptProcess {
             Some(Outcome::Ok(_)) => Next::complete(json!("printed")),
             Some(Outcome::Unknown(_)) => Next::stuck("the printer may or may not have printed"),
             Some(other) => Next::fail(format!("{other:?}")),
+        }
+    }
+}
+
+#[derive(Serialize, Deserialize)]
+pub struct Settle {
+    pub order: Uuid,
+    pub command: String,
+}
+
+/// Runs one command on an order as its one step, `run`, then completes.
+pub struct SettleProcess;
+
+impl Process for SettleProcess {
+    const NAME: &'static str = "settle";
+    type Input = Settle;
+    fn next(i: &Settle, p: &Progress) -> Next {
+        match p.outcome("run") {
+            None => Next::run(
+                "run",
+                &i.command,
+                json!({ "order": i.order, "charge": "cash" }),
+            ),
+            Some(_) => Next::complete("done"),
         }
     }
 }
@@ -804,8 +850,10 @@ pub fn shop(
         .command::<ExpireOrder>()
         .command::<CloseOrder>()
         .command::<CloseAndRemind>()
+        .command::<PayLater>()
         .command::<AddCounter>()
         .process::<CheckoutProcess>()
+        .process::<SettleProcess>()
         .process::<ReceiptProcess>()
         .process::<FulfilProcess>()
         .process::<PrintProcess>()

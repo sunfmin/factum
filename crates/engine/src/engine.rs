@@ -242,80 +242,95 @@ impl<S: Store> Engine<S> {
 
     /// Decides and records a command, or answers what its key answered.
     pub async fn submit(&self, submission: Submission) -> Result<Applied, Error> {
-        self.submit_at(submission, self.clock.now(), false).await
+        self.submit_at(submission, self.clock.now(), None).await
     }
 
-    /// Submits at `now`. A refusal, or an answer that wrote no events, is
-    /// kept for the key only when `keep`: factum's own runners (steps,
-    /// schedules, recurring) keep theirs, so a runner that took one over
-    /// answers what the first decided.
+    /// Submits at `now`. An external submit (no `then`) that is refused,
+    /// or writes no events, commits nothing. A runner's submit commits its
+    /// outcome (`then`) with the command's events, or alone for a refusal,
+    /// an answer with no events or one its key holds already: a runner that
+    /// takes it over finds the outcome, or nothing of it. `Conflict` on the
+    /// runner's own stream is the caller's: another runner recorded first.
     pub(crate) async fn submit_at(
         &self,
         sub: Submission,
         now: Instant,
-        keep: bool,
+        then: Option<&Then<'_>>,
     ) -> Result<Applied, Error> {
         let print = fingerprint(&sub.command, &sub.params);
         let mut races = Races::new();
         loop {
-            if let Some(answer) = self.store.answer(sub.key).await? {
-                return replay(answer, print);
-            }
-            let (stream, agg, decided) = match self.decide(&sub, now).await {
-                Ok(d) => d,
-                Err(Error::Rejected(r)) if keep => {
-                    let unit = Unit {
-                        answer: Some((
-                            sub.key,
-                            Answer {
-                                fingerprint: print,
-                                result: AnswerResult::Rejected(r.clone()),
+            let (result, mut unit, decided) = match self.store.answer(sub.key).await? {
+                Some(answer) => (replay(answer, print), Unit::default(), None),
+                None => match self.decide(&sub, now).await {
+                    Ok((stream, agg, (loaded, new))) => {
+                        let unit = self.unit(Write {
+                            stream: stream.clone(),
+                            expected: loaded.version,
+                            events: new,
+                            meta: Meta {
+                                now,
+                                by: sub.by.clone(),
+                                key: Some(sub.key),
+                                command: sub.command.clone(),
+                                fingerprint: Some(print),
                             },
-                        )),
-                        ..Unit::default()
-                    };
-                    match self.store.commit(unit).await {
-                        Ok(_) => return Err(Error::Rejected(r)),
-                        // Another writer answered the key first: answer what it holds.
-                        Err(StoreError::KeyTaken(_)) => {
-                            races.lost(&sub.command).await?;
-                            continue;
-                        }
-                        Err(e) => return Err(e.into()),
+                            work: Vec::new(),
+                            guards: Vec::new(),
+                        });
+                        let applied = Applied {
+                            events: unit.appends[0].events.clone(),
+                            replayed: false,
+                        };
+                        (Ok(applied), unit, Some((stream, agg, loaded)))
                     }
-                }
-                Err(e) => return Err(e),
-            };
-            let (loaded, new) = decided;
-            // Like a refusal, an external submit that writes nothing keeps
-            // nothing: a re-send decides again and can apply nothing twice.
-            if new.is_empty() && !keep {
-                return Ok(Applied {
-                    events: Vec::new(),
-                    replayed: false,
-                });
-            }
-            let write = Write {
-                stream: stream.clone(),
-                expected: loaded.version,
-                events: new,
-                meta: Meta {
-                    now,
-                    by: sub.by.clone(),
-                    key: Some(sub.key),
-                    command: sub.command.clone(),
-                    fingerprint: Some(print),
+                    // A runner's refusal commits only while no other writer
+                    // has answered the key.
+                    Err(Error::Rejected(r)) if then.is_some() => {
+                        let unit = Unit {
+                            key: Some(sub.key),
+                            ..Unit::default()
+                        };
+                        (Err(Error::Rejected(r)), unit, None)
+                    }
+                    Err(e) => return Err(e),
                 },
-                work: Vec::new(),
-                guards: Vec::new(),
             };
-            match self.write(write).await {
+            if let Some(then) = then {
+                let outcome = match &result {
+                    Ok(applied) => Ok(&applied.events[..]),
+                    Err(Error::Rejected(r)) => Err(r),
+                    Err(_) => return result,
+                };
+                let mut write = then.write.clone();
+                write.events = (then.outcome)(outcome);
+                let own = self.unit(write);
+                unit.appends.extend(own.appends);
+                unit.work.extend(own.work);
+                unit.guards.extend(own.guards);
+            } else if decided.is_none() {
+                return result;
+            }
+            match self.store.commit(unit).await {
                 Ok(committed) => {
-                    self.keep_snapshot(agg, &stream, loaded, &committed).await?;
-                    return Ok(Applied {
-                        events: committed,
-                        replayed: false,
-                    });
+                    let Some((stream, agg, loaded)) = decided else {
+                        return result;
+                    };
+                    let events: Vec<Event> = committed
+                        .into_iter()
+                        .filter(|e| e.stream == stream)
+                        .collect();
+                    self.keep_snapshot(agg, &stream, loaded, &events).await?;
+                    return match result {
+                        Ok(_) => Ok(Applied {
+                            events,
+                            replayed: false,
+                        }),
+                        err => err,
+                    };
+                }
+                Err(StoreError::Conflict(s)) if then.is_some_and(|t| t.write.stream == s) => {
+                    return Err(StoreError::Conflict(s).into());
                 }
                 Err(StoreError::Conflict(_) | StoreError::KeyTaken(_)) => {
                     races.lost(&sub.command).await?
@@ -374,9 +389,14 @@ impl<S: Store> Engine<S> {
     /// The one way events are written: numbered from `expected`, stamped
     /// with `meta` and their current type version, and committed with the
     /// work they imply (`effects`), the work given beside it, its guards
-    /// and, under `meta.fingerprint`, as the answer of `meta.key`. Every work
+    /// and, under `meta.fingerprint`, only while `meta.key` has no answer. Every work
     /// row a commit changes is thereby implied by an event committed with it.
     pub(crate) async fn write(&self, w: Write) -> Result<Vec<Event>, StoreError> {
+        self.store.commit(self.unit(w)).await
+    }
+
+    /// The unit [`Engine::write`] commits.
+    fn unit(&self, w: Write) -> Unit {
         let agg = self.model.aggregates.get(&w.stream.aggregate);
         let mut version = w.expected;
         let events: Vec<Event> = w
@@ -398,30 +418,18 @@ impl<S: Store> Engine<S> {
             .collect();
         let mut work: Vec<WorkChange> = events.iter().flat_map(effects).collect();
         work.extend(w.work);
-        let (key, print) = (w.meta.key, w.meta.fingerprint);
-        let answer = key.zip(print).map(|(key, fingerprint)| {
-            let result = AnswerResult::Applied(events.clone());
-            (
-                key,
-                Answer {
-                    fingerprint,
-                    result,
-                },
-            )
-        });
         // Even with no events the append checks the stream is still at
         // `expected`: the work given was decided on that version.
-        let unit = Unit {
+        Unit {
             appends: vec![Append {
                 stream: w.stream,
                 expected: w.expected,
                 events,
             }],
-            answer,
+            key: w.meta.fingerprint.and(w.meta.key),
             work,
             guards: w.guards,
-        };
-        self.store.commit(unit).await
+        }
     }
 
     pub(crate) fn aggregate(&self, name: &str) -> Result<&dyn DynAggregate, Error> {
@@ -628,27 +636,9 @@ impl<S: Store> Engine<S> {
         work: Vec<WorkChange>,
         guards: Vec<(WorkKind, Uuid, Uuid)>,
     ) -> Result<(), StoreError> {
-        let events = events
-            .into_iter()
-            .map(|e| NewEvent {
-                kind: e.kind().to_string(),
-                data: e.data(),
-            })
-            .collect();
-        let write = Write {
-            stream: StreamId::new(PROCESS, id),
-            expected,
-            events,
-            meta: Meta {
-                now,
-                by: by.clone(),
-                key: None,
-                command: PROCESS.to_string(),
-                fingerprint: None,
-            },
-            work,
-            guards,
-        };
+        let mut write = process_write(id, expected, by, now, guards);
+        write.events = events.into_iter().map(new_event).collect();
+        write.work = work;
         self.write(write).await.map(|_| ())
     }
 
@@ -728,7 +718,53 @@ impl<S: Store> Engine<S> {
     }
 }
 
+/// A write to `process/<id>` at `expected`, with no events yet.
+pub(crate) fn process_write(
+    id: Uuid,
+    expected: Version,
+    by: &By,
+    now: Instant,
+    guards: Vec<(WorkKind, Uuid, Uuid)>,
+) -> Write {
+    Write {
+        stream: StreamId::new(PROCESS, id),
+        expected,
+        events: Vec::new(),
+        meta: Meta {
+            now,
+            by: by.clone(),
+            key: None,
+            command: PROCESS.to_string(),
+            fingerprint: None,
+        },
+        work: Vec::new(),
+        guards,
+    }
+}
+
+pub(crate) fn new_event(e: ProcessEvent) -> NewEvent {
+    NewEvent {
+        kind: e.kind().to_string(),
+        data: e.data(),
+    }
+}
+
+/// What a runner commits with its submit ([`Engine::submit_at`]): its
+/// outcome, as events of a stream of its own, written as `write` says.
+pub(crate) struct Then<'a> {
+    /// The runner's stream at the version it read, its meta, work and
+    /// guards; its events are the outcome's.
+    pub write: Write,
+    /// The outcome's events: of the command's events, or of its refusal.
+    pub outcome: &'a OutcomeEvents<'a>,
+}
+
+/// A runner's outcome as events: of the command's events, or its refusal.
+pub(crate) type OutcomeEvents<'a> =
+    dyn Fn(Result<&[Event], &Rejection>) -> Vec<NewEvent> + Sync + 'a;
+
 /// Events for one stream and what commits with them: see [`Engine::write`].
+#[derive(Clone)]
 pub(crate) struct Write {
     pub stream: StreamId,
     pub expected: Version,

@@ -16,6 +16,9 @@ use crate::process::{PROCESS, ProcessEvent, Step};
 pub const SCHEDULED: &str = "CommandScheduled";
 /// The one event of a schedule's outcome stream, `schedule/<event id>`.
 pub const SCHEDULE_RAN: &str = "ScheduleRan";
+/// A recurring command's run in a period: its outcome, a refusal included,
+/// on `recurring/<key>`, committed with the command's events.
+pub const RECURRING_RAN: &str = "RecurringRan";
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
@@ -300,4 +303,10 @@ pub fn effects(event: &Event) -> Vec<WorkChange> {
 /// The stream a schedule's outcome is recorded on.
 pub fn schedule_stream(event: Uuid) -> StreamId {
     StreamId::new("schedule", event)
+}
+
+/// The stream a recurring command's run in the period of `key`
+/// (`recurring_key`) is recorded on.
+pub fn recurring_stream(key: Uuid) -> StreamId {
+    StreamId::new("recurring", key)
 }
