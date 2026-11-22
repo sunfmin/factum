@@ -164,15 +164,23 @@ fn a_database_with_kept_refusals_keeps_none_once_opened() {
         .unwrap()
         .map(|r| r.unwrap())
         .collect();
-    assert_eq!(keys, ["a"]);
+    // factum#42: the applied one's fingerprint went into its events' meta.
+    assert!(keys.is_empty(), "{keys:?}");
 }
 
-/// Takes a database back to how factum before #40 kept answers: each one a
-/// JSON copy, an applied one's events copied whole.
-fn with_copied_answers(path: &Path, answers: &[(Uuid, Answer)]) {
+/// Takes a database back to schema `version` with each answer kept as
+/// factum before #40 kept it: a JSON copy, an applied one's events copied
+/// whole; and no event's meta carrying a fingerprint (before #42).
+fn with_copied_answers(path: &Path, version: u32, answers: &[(Uuid, Answer)]) {
     let conn = Connection::open(path).unwrap();
-    conn.execute_batch("DROP INDEX events_key; DELETE FROM answers; PRAGMA user_version = 3;")
-        .unwrap();
+    if version < 4 {
+        conn.execute_batch("DROP INDEX events_key").unwrap();
+    }
+    conn.execute_batch(&format!(
+        "DELETE FROM answers; PRAGMA user_version = {version};
+         UPDATE events SET meta = json_remove(meta, '$.fingerprint');"
+    ))
+    .unwrap();
     for (key, answer) in answers {
         conn.execute(
             "INSERT INTO answers (key, answer) VALUES (?1, ?2)",
@@ -184,6 +192,17 @@ fn with_copied_answers(path: &Path, answers: &[(Uuid, Answer)]) {
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn answers_kept_as_copies_answer_the_same_once_opened() {
+    copies_answer_the_same_once_opened(3).await;
+}
+
+/// As factorium's host had them: a binary from before #40 still writing
+/// after a later one had opened the database.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn copies_an_older_binary_kept_later_answer_the_same_once_opened() {
+    copies_answer_the_same_once_opened(5).await;
+}
+
+async fn copies_answer_the_same_once_opened(version: u32) {
     let w = World::new(&Sqlite);
     let e = w.engine("a");
     let o = factum_conformance::id();
@@ -241,18 +260,42 @@ async fn answers_kept_as_copies_answer_the_same_once_opened() {
             .collect::<Vec<_>>(),
         ["OrderCancelled"]
     );
-    with_copied_answers(w.store.path(), &copies);
+    with_copied_answers(w.store.path(), version, &copies);
 
     let opened = SqliteStore::open(w.store.path()).unwrap();
     for (key, copy) in &copies {
         let answer = opened.answer(*key).await.unwrap();
-        // factum#41: one that wrote no events is no longer kept.
-        let wrote = !matches!(&copy.result, AnswerResult::Applied(e) if e.is_empty());
+        // factum#41: one that wrote no events is no longer kept; one found
+        // after that step is a runner's, kept.
+        let empty = matches!(&copy.result, AnswerResult::Applied(e) if e.is_empty());
+        let wrote = !empty || version >= 5;
         assert_eq!(answer.as_ref(), wrote.then_some(copy), "{key}");
     }
     let again = w.engine("again").submit(placed).await.unwrap();
     assert!(again.replayed);
     assert_eq!(again.events, first.events);
+    // A submit since keeps no row either: its events are its answer.
+    let next = sub(
+        "order.place",
+        json!({ "order": factum_conformance::id(), "total": 1 }),
+    );
+    assert!(
+        !w.engine("next")
+            .submit(next)
+            .await
+            .unwrap()
+            .events
+            .is_empty()
+    );
+    let conn = Connection::open(w.store.path()).unwrap();
+    let rows: u32 = conn
+        .query_row("SELECT COUNT(*) FROM answers", [], |r| r.get(0))
+        .unwrap();
+    assert_eq!(
+        rows,
+        if version >= 5 { 2 } else { 1 },
+        "only what no event gives"
+    );
 }
 
 #[test]

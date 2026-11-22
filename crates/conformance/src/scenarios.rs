@@ -4,10 +4,12 @@
 use std::sync::atomic::Ordering;
 
 use factum::{
-    Engine, Error, Event, Finished, Op, Options, Outcome, Query, Store, StreamId, Uuid, Value,
-    Version,
+    Engine, Error, Event, Finished, Op, Options, Outcome, Query, Store, StreamId, Submission, Uuid,
+    Value, Version,
 };
-use factum_core::{Recurring, Work, WorkChange, WorkKind, recurring_key, start_key, step_key};
+use factum_core::{
+    Recurring, Work, WorkChange, WorkKind, recurring_key, schedule_key, start_key, step_key,
+};
 use factum_store::{AnswerResult, Batch, StoreError, Unit};
 use serde_json::json;
 
@@ -138,6 +140,27 @@ pub async fn a_key_replays_its_first_answer_and_refuses_reuse<B: Backend>(b: &B)
     other.params = json!({ "order": o, "total": 600 });
     assert_eq!(refused(e.submit(other).await), "key_reused");
     assert_eq!(e.history(&order(o)).await.unwrap().len(), 2);
+}
+
+pub async fn a_key_another_writer_answered_first_elsewhere_is_reused<B: Backend>(b: &B) {
+    let w = World::new(b);
+    let (a, flaky) = w.flaky("a");
+    let other = w.engine("b");
+    let (mine, theirs) = (id(), id());
+    let s = sub("order.place", json!({ "order": mine, "total": 5 }));
+    // Another writer answers the key first, with other params, so its
+    // events are in another stream: only the key itself tells them apart.
+    let mut rival = s.clone();
+    rival.params = json!({ "order": theirs, "total": 5 });
+    flaky.race_on(
+        |u| appends(u, "OrderPlaced"),
+        Box::pin(async move {
+            other.submit(rival).await.unwrap();
+        }),
+    );
+    assert_eq!(refused(a.submit(s).await), "key_reused");
+    assert!(a.history(&order(mine)).await.unwrap().is_empty());
+    assert_eq!(count(&a, theirs, "OrderPlaced").await, 1);
 }
 
 pub async fn a_refusal_keeps_nothing_and_a_resend_decides_again<B: Backend>(b: &B) {
@@ -411,6 +434,14 @@ pub async fn a_scheduled_command_runs_once_when_due<B: Backend>(b: &B) {
     a.settle().await.unwrap();
     assert_eq!(status(&a, o).await, "cancelled");
     assert_eq!(count(&a, o, "OrderCancelled").await, 1);
+    // Its key answers what it wrote, not the ScheduleRan recorded beside.
+    let scheduled = a.history(&order(o)).await.unwrap();
+    let scheduled = scheduled.iter().find(|ev| ev.kind == "CommandScheduled");
+    let key = schedule_key(scheduled.unwrap().id);
+    let again = Submission::new("order.expire", json!({ "order": o }), key, ann());
+    let again = a.submit(again).await.unwrap();
+    assert!(again.replayed);
+    assert_eq!(kinds(&again.events), ["OrderCancelled"]);
 }
 
 pub async fn a_refused_scheduled_command_is_recorded_not_retried<B: Backend>(b: &B) {

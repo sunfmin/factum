@@ -11,7 +11,7 @@ use factum_core::{
 
 use crate::{
     Answer, Batch, Checkpoint, Claim, DeadLetter, Kept, Result, Snapshot, Store, Unit, apply_op,
-    check_batch, check_unit, claim_row, op_target, release_row, wake_row,
+    check_batch, check_unit, claim_row, op_target, read_answer, release_row, wake_row,
 };
 
 #[derive(Default)]
@@ -36,6 +36,8 @@ struct Row {
 struct Inner {
     streams: HashMap<StreamId, Vec<Event>>,
     log: Vec<Event>,
+    /// Where in the log each key's events are: the index by key.
+    keyed: HashMap<Uuid, Vec<usize>>,
     answers: HashMap<Uuid, Kept>,
     work: BTreeMap<(WorkKind, Uuid), Row>,
     work_seq: u64,
@@ -57,9 +59,16 @@ impl Inner {
         check_unit(
             unit,
             |stream| Ok(self.version(stream)),
-            |key| Ok(self.answers.contains_key(&key)),
+            |key| Ok(self.answers.contains_key(&key) || !self.answered(key).is_empty()),
             |kind, id| Ok(self.work.get(&(kind, id)).and_then(|r| r.work.lease)),
         )
+    }
+
+    /// The events committed under the key with a fingerprint.
+    fn answered(&self, key: Uuid) -> Vec<Event> {
+        let at = self.keyed.get(&key).map_or(&[][..], Vec::as_slice);
+        let events = at.iter().map(|&i| self.log[i].clone());
+        events.filter(|e| e.meta.fingerprint.is_some()).collect()
     }
 
     fn change(&mut self, change: WorkChange) {
@@ -158,16 +167,7 @@ impl Store for MemoryStore {
 
     async fn answer(&self, key: Uuid) -> Result<Option<Answer>> {
         let inner = self.lock();
-        let of_key = |s: &StreamId| {
-            let events = inner.streams[s].iter().filter(|e| e.meta.key == Some(key));
-            Ok(events.cloned().collect())
-        };
-        inner
-            .answers
-            .get(&key)
-            .cloned()
-            .map(|k| k.answer(of_key))
-            .transpose()
+        read_answer(inner.answered(key), || Ok(inner.answers.get(&key).cloned()))
     }
 
     async fn commit(&self, unit: Unit) -> Result<Vec<Event>> {
@@ -177,6 +177,10 @@ impl Store for MemoryStore {
         for append in unit.appends {
             for mut event in append.events {
                 event.position = Position(0, inner.log.len() as u64 + 1);
+                if let Some(key) = event.meta.key {
+                    let at = inner.log.len();
+                    inner.keyed.entry(key).or_default().push(at);
+                }
                 inner.log.push(event.clone());
                 inner
                     .streams
@@ -186,8 +190,8 @@ impl Store for MemoryStore {
                 committed.push(event);
             }
         }
-        if let Some((key, answer)) = unit.answer {
-            inner.answers.insert(key, Kept::of(&answer));
+        if let Some((key, kept)) = unit.answer.and_then(|(k, a)| Some((k, Kept::of(&a)?))) {
+            inner.answers.insert(key, kept);
         }
         for change in unit.work {
             inner.change(change);

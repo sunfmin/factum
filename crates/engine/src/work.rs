@@ -531,8 +531,8 @@ impl<S: Store> Engine<S> {
                 by: By::Schedule(row.id),
                 key: Some(schedule_key(row.id)),
                 command: row.name.clone(),
+                fingerprint: None,
             },
-            fingerprint: None,
             work: Vec::new(),
             guards: Vec::new(),
         };

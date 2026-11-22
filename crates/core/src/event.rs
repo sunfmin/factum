@@ -111,6 +111,12 @@ pub struct Meta {
     pub key: Option<Uuid>,
     /// The command that recorded it.
     pub command: String,
+    /// The submission's fingerprint (command and params), on the events a
+    /// submission wrote as its answer: the key answers them, and refuses
+    /// another fingerprint. None on events the engine writes beside a key's
+    /// answer, such as a schedule's `ScheduleRan`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub fingerprint: Option<Uuid>,
 }
 
 /// An event a decide returns: its stored type name and its data.

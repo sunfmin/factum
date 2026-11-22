@@ -146,6 +146,7 @@ macro_rules! suite {
             commands_record_and_fold,
             unknown_commands_and_bad_params_are_refused,
             a_key_replays_its_first_answer_and_refuses_reuse,
+            a_key_another_writer_answered_first_elsewhere_is_reused,
             a_refusal_keeps_nothing_and_a_resend_decides_again,
             an_answer_with_no_events_keeps_nothing_and_a_resend_decides_again,
             a_fault_is_no_answer_and_the_key_decides_again,
