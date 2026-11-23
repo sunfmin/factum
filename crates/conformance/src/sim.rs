@@ -216,6 +216,9 @@ struct Order {
 /// One step's state, as the invariants read it.
 struct Seen {
     state: Value,
+    /// The invariants checked in a state they are about: `charged_once`
+    /// once an order is charged, not while none is.
+    checked: BTreeSet<&'static str>,
     broken: Option<&'static str>,
 }
 
@@ -336,7 +339,7 @@ impl Sim {
         let seen = self.seen();
         println!(
             "{}",
-            json!({ "step": step, "event": event, "state": seen.state })
+            json!({ "step": step, "event": event, "state": seen.state, "checked": seen.checked })
         );
         match seen.broken {
             Some(invariant) => {
@@ -500,6 +503,7 @@ impl Sim {
     fn seen(&self) -> Seen {
         let outside = self.outside.lock().unwrap();
         let mut broken = None;
+        let mut checked = BTreeSet::new();
         let mut orders = Vec::new();
         for o in &self.orders {
             let charged = outside.charged.get(&o.id).map_or(0, BTreeSet::len);
@@ -513,33 +517,28 @@ impl Sim {
             let (paid, cancelled) = (count("OrderPaid"), count("OrderCancelled"));
             let checkout = self.process(o.checkout, "charge", &["charge", "find", "pay", "cancel"]);
             let receipt = self.process(o.receipt, "print", &["print"]);
+            let done = |s: &Standing| matches!(s.outcome, Some(Outcome::Ok(_)));
+            let failed = |s: &Standing| matches!(s.outcome, Some(Outcome::Failed(_)));
+            // Each invariant, the state it is about, and whether it holds.
             let checks = [
-                ("charged_once", charged <= 1),
-                ("paid_once", paid <= 1),
-                ("printed_at_most_once", printed <= 1),
+                ("charged_once", charged >= 1, charged <= 1),
+                ("paid_once", paid >= 1, paid <= 1),
+                ("printed_at_most_once", printed >= 1, printed <= 1),
+                ("unknown_never_done", done(&checkout), charged == 1),
+                ("unknown_never_done", done(&receipt), printed == 1),
+                ("failed_never_done", failed(&checkout), charged == 0),
+                ("failed_never_done", failed(&receipt), printed == 0),
                 (
-                    "unknown_never_done",
-                    !matches!(checkout.outcome, Some(Outcome::Ok(_))) || charged == 1,
+                    "nothing_lost",
+                    !(checkout.finished && receipt.finished),
+                    checkout.kept && receipt.kept,
                 ),
-                (
-                    "unknown_never_done",
-                    !matches!(receipt.outcome, Some(Outcome::Ok(_))) || printed == 1,
-                ),
-                (
-                    "failed_never_done",
-                    !matches!(checkout.outcome, Some(Outcome::Failed(_))) || charged == 0,
-                ),
-                (
-                    "failed_never_done",
-                    !matches!(receipt.outcome, Some(Outcome::Failed(_))) || printed == 0,
-                ),
-                ("nothing_lost", checkout.kept && receipt.kept),
             ];
-            if broken.is_none() {
-                broken = checks
-                    .iter()
-                    .find(|(_, holds)| !holds)
-                    .map(|(name, _)| *name);
+            for (name, about, holds) in checks {
+                checked.extend(about.then_some(name));
+                if about && !holds {
+                    broken = broken.or(Some(name));
+                }
             }
             orders.push(json!({
                 "over": o.total > LIMIT,
@@ -575,6 +574,7 @@ impl Sim {
                 "held": held,
                 "orders": orders,
             }),
+            checked,
             broken,
         }
     }
@@ -591,6 +591,7 @@ impl Sim {
             return Standing {
                 outcome: None,
                 state: Value::Null,
+                finished: false,
                 kept: false,
             };
         };
@@ -618,7 +619,8 @@ impl Sim {
         } else {
             self.work(WorkKind::Action, step_key(id, &pending))
         };
-        let kept = view.finished.is_some() || advance.is_some() || action.is_some();
+        let finished = view.finished.is_some();
+        let kept = finished || advance.is_some() || action.is_some();
         Standing {
             outcome,
             state: json!({
@@ -628,6 +630,7 @@ impl Sim {
                 "advance": row_state(advance.as_ref()),
                 "action": row_state(action.as_ref()),
             }),
+            finished,
             kept,
         }
     }
@@ -640,6 +643,7 @@ impl Sim {
 struct Standing {
     outcome: Option<Outcome>,
     state: Value,
+    finished: bool,
     kept: bool,
 }
 
