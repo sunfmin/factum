@@ -159,6 +159,12 @@
     "sentence": "A step never changes what an event says.",
     "source": "SPEC.md:122"
   },
+  "bca9b50a7f7b": {
+    "kind": "fixed-often",
+    "mark": "not",
+    "summary": "crates/conformance/src/lib.rs was changed by 2 fixes in 180 days, and no registered promise's check covers it",
+    "why": "lib.rs's two fixes only register scenarios in suite!: a_writer_that_loses_every_race_gives_up keeps a-writer-gives-up-after-1000-losses (SPEC.md:214), a_result_whose_lease_ran_out_meanwhile_is_refused keeps renew-only-a-live-lease (SPEC.md:95), a_wake_while_a_runner_holds_the_process_is_not_lost keeps work-rows-implied-by-events (SPEC.md:44); all three are registered with test checks, whose code truefit cannot see"
+  },
   "bef07edd0660": {
     "mark": "promise",
     "sentence": "A call is made only under its claim's lease, renewed from the clock just before it: a runner whose lease was taken over (an earlier call of its tick outlived the timeout) does not make it, so no call lands after another holder recorded the step.",
