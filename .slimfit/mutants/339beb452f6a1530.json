@@ -1,0 +1,33 @@
+{
+  "tree": "4c0add9bcfb4cd70ff914ff8b92992d9c7f666ea+d1fba762150c532c",
+  "picker": "codex:01a20778-5cd5-73c2-b9b7-6439caf87dee:default",
+  "author": "claude-code:645d9eab-e0ba-5f54-aa15-900a4e3950cd:opus",
+  "picks": {
+    "rust": [
+      {
+        "name": "crates/sqlite/src/schema.rs:210:5: replace give_back with ()",
+        "why": "Writes can return correct results while leaving freed pages in the file, so a test must observe page reclamation to catch this.",
+        "outcome": "killed",
+        "first_outcome": "killed"
+      },
+      {
+        "name": "crates/sqlite/src/schema.rs:193:5: replace make_incremental -> rusqlite::Result<()> with Ok(())",
+        "why": "A legacy database can migrate and serve reads and writes while still retaining its original auto_vacuum mode.",
+        "outcome": "killed",
+        "first_outcome": "killed"
+      },
+      {
+        "name": "crates/sqlite/src/schema.rs:177:14: replace > with >= in migrate",
+        "why": "This rejects an already current database, which fresh opens and upgrades from older versions do not exercise.",
+        "outcome": "killed",
+        "first_outcome": "killed"
+      },
+      {
+        "name": "crates/sqlite/src/schema.rs:193:74: replace != with == in make_incremental",
+        "why": "This runs a full VACUUM on already incremental files, which can leave all query results and the final auto_vacuum mode unchanged.",
+        "outcome": "killed",
+        "first_outcome": "killed"
+      }
+    ]
+  }
+}
