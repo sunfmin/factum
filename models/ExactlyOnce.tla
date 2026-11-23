@@ -173,7 +173,8 @@ RunStep(o) ==
     /\ woken' = woken \cup {<<o, "checkout">>}
     /\ UNCHANGED calls
 
-(* The order's scheduled `order.expire` runs: a placed order is cancelled. *)
+(* The order's scheduled `order.expire` runs (`run_scheduled`): a placed  *)
+(* order is cancelled, its ScheduleRan committed with the cancel.         *)
 Expire(o) ==
     /\ Placed(o)
     /\ orders' = [orders EXCEPT ![o].cancelled = @ + 1]
@@ -227,8 +228,9 @@ Answered(c) ==
                 ELSE /\ SetProc(c.o, c.p, [q EXCEPT !.action = Released(q.action, FALSE)])
                      /\ UNCHANGED woken)
 
-(* A write this model leaves out (schedule rows, ScheduleRan), a lost      *)
-(* commit, or a step that writes nothing: a clock move, a fault cued.      *)
+(* A write this model leaves out (schedule rows, a refused expire's lone  *)
+(* ScheduleRan), a lost commit, or a step that writes nothing: a clock    *)
+(* move, a fault cued.                                                    *)
 Unseen == UNCHANGED vars
 
 -----------------------------------------------------------------------------
