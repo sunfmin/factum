@@ -111,6 +111,30 @@ pub async fn commands_record_and_fold<B: Backend>(b: &B) {
     assert!(past_end.unwrap().is_empty(), "nothing after the last event");
 }
 
+/// A runner on the system clock decides at the wall clock's time, in
+/// milliseconds since the Unix epoch.
+pub async fn a_runner_on_the_system_clock_decides_at_wall_clock_time<B: Backend>(b: &B) {
+    let w = World::new(b);
+    let e = Engine::new(
+        b.reopen(&w.store),
+        std::sync::Arc::new(w.shop(OrderList::default())),
+        std::sync::Arc::new(factum::SystemClock),
+        "a",
+    );
+    let wall = || {
+        let since = std::time::UNIX_EPOCH.elapsed().unwrap();
+        i64::try_from(since.as_millis()).unwrap()
+    };
+    let before = wall();
+    let o = place(&e, 500).await;
+    let after = wall();
+    let now = e.history(&order(o)).await.unwrap()[0].meta.now.0;
+    assert!(
+        (before..=after).contains(&now),
+        "decided at {now}, not within {before}..={after}"
+    );
+}
+
 pub async fn unknown_commands_and_bad_params_are_refused<B: Backend>(b: &B) {
     let w = World::new(b);
     let e = w.engine("a");
