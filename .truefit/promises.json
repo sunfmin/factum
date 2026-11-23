@@ -154,6 +154,11 @@
     "sentence": "Beside the scenarios, a **seeded simulation** (`factum_conformance::sim`, run by `truefit sim` from `truefit.toml`, in the gate) drives the same public API on the in-memory store with what no scenario lines up by hand: from one seed, orders placed, ticks of three runners interleaved store write by store write (a runner's step is one commit, one claim that took rows, or one call to another system), clock moves, a runner stopping between any two store calls of a tick, a store write failing, and calls to another system answering at once, \"try later\" (never for a key it already did: it answers that again), late (after a takeover answered too) or never.",
     "source": "SPEC.md:148"
   },
+  "bbe8d6f4b167": {
+    "mark": "promise",
+    "sentence": "A step never changes what an event says.",
+    "source": "SPEC.md:122"
+  },
   "bef07edd0660": {
     "mark": "promise",
     "sentence": "A call is made only under its claim's lease, renewed from the clock just before it: a runner whose lease was taken over (an earlier call of its tick outlived the timeout) does not make it, so no call lands after another holder recorded the step.",
