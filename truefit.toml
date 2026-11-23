@@ -193,6 +193,13 @@ source = "SPEC.md:112"
 check = ["test"] # a_work_row_that_does_not_decode_is_a_fault
 
 [[promise]]
+name = "a-schema-step-never-changes-an-event"
+says = "A step never changes what an event says."
+source = "SPEC.md:122"
+check = ["test"] # crates/sqlite/tests/conformance.rs: answers_kept_as_copies_answer_the_same_once_opened, copies_an_older_binary_kept_later_answer_the_same_once_opened
+why = "the store's file format is tested beside the store (SPEC.md:174): a database taken back to schema 3 or 5 is opened and its events, meta and all, are the ones first written"
+
+[[promise]]
 name = "charged_once"
 says = "no order is charged twice"
 source = "SPEC.md:156"
