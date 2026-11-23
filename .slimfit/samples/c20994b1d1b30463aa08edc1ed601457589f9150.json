@@ -1,0 +1,49 @@
+{
+  "tip": "c20994b1d1b30463aa08edc1ed601457589f9150",
+  "from": "425cb72d84c0d933fc0c30e1378a6a6660c81dae",
+  "pool": 44,
+  "drawn": {
+    "rust": [
+      {
+        "name": "crates/engine/src/work.rs:493:9: replace Engine<S>::run_due -> Result<usize, Error> with Ok(0)",
+        "outcome": "killed"
+      },
+      {
+        "name": "crates/engine/src/engine.rs:729:5: replace process_write -> Write with Default::default()",
+        "outcome": "unviable"
+      },
+      {
+        "name": "crates/engine/src/engine.rs:395:9: replace Engine<S>::write -> Result<Vec<Event>, StoreError> with Ok(vec![Default::default()])",
+        "outcome": "unviable"
+      },
+      {
+        "name": "crates/store/src/memory.rs:61:22: delete ! in Inner::check",
+        "outcome": "killed"
+      },
+      {
+        "name": "crates/core/src/process.rs:276:5: replace advance -> Advance with Default::default()",
+        "outcome": "unviable"
+      },
+      {
+        "name": "crates/sqlite/src/lib.rs:172:5: replace migrate -> Result<()> with Ok(())",
+        "outcome": "killed"
+      },
+      {
+        "name": "crates/store/src/memory.rs:168:9: replace <impl Store for MemoryStore>::answer -> Result<Option<Answer>> with Ok(None)",
+        "outcome": "killed"
+      },
+      {
+        "name": "crates/store/src/memory.rs:68:9: replace Inner::answered -> Vec<Event> with vec![Default::default()]",
+        "outcome": "unviable"
+      },
+      {
+        "name": "crates/sqlite/src/lib.rs:288:9: replace SqliteStore::write -> Result<T> with Ok(Default::default())",
+        "outcome": "unviable"
+      },
+      {
+        "name": "crates/sqlite/src/lib.rs:640:9: replace <impl Store for SqliteStore>::answer -> Result<Option<Answer>> with Ok(Some(Default::default()))",
+        "outcome": "unviable"
+      }
+    ]
+  }
+}

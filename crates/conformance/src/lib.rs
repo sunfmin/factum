@@ -144,6 +144,7 @@ macro_rules! suite {
     ($backend:expr) => {
         $crate::suite!(@each $backend;
             commands_record_and_fold,
+            a_runner_on_the_system_clock_decides_at_wall_clock_time,
             unknown_commands_and_bad_params_are_refused,
             a_key_replays_its_first_answer_and_refuses_reuse,
             a_key_another_writer_answered_first_elsewhere_is_reused,
