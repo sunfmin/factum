@@ -1,10 +1,54 @@
 {
-  "commit": "303938c9fcc2349c1163accf50059b2241f55cd9",
-  "date": "2026-11-23",
-  "inputs": "fb59674c5e1d2a630fbfe877f6e34abda13379aefc53666f07c7ec913d2e8b39",
+  "commit": "63f4e3cd7881f1c6828bdb3c6d1793d1ceeeacc3",
+  "date": "2026-11-24",
+  "inputs": "60119d1460d5e76999d82cbf02f6de7d129220fe075d3ce38478d1bd22309c92",
   "result": "passes",
   "traces": {
-    "accept": [],
-    "reject": []
+    "accept": [
+      {
+        "breaks": null,
+        "file": ".truefit/traces/exactly-once/accept/seed-7.jsonl",
+        "result": "allowed",
+        "step": null
+      }
+    ],
+    "reject": [
+      {
+        "breaks": "charged_once",
+        "file": ".truefit/traces/exactly-once/reject/charged_twice.jsonl",
+        "result": "disallowed",
+        "step": 7
+      },
+      {
+        "breaks": "unknown_never_done",
+        "file": ".truefit/traces/exactly-once/reject/done_without_call.jsonl",
+        "result": "disallowed",
+        "step": 5
+      },
+      {
+        "breaks": "failed_never_done",
+        "file": ".truefit/traces/exactly-once/reject/failed_after_call.jsonl",
+        "result": "disallowed",
+        "step": 6
+      },
+      {
+        "breaks": "paid_once",
+        "file": ".truefit/traces/exactly-once/reject/paid_twice.jsonl",
+        "result": "disallowed",
+        "step": 10
+      },
+      {
+        "breaks": "printed_at_most_once",
+        "file": ".truefit/traces/exactly-once/reject/printed_twice.jsonl",
+        "result": "disallowed",
+        "step": 7
+      },
+      {
+        "breaks": "nothing_lost",
+        "file": ".truefit/traces/exactly-once/reject/row_lost.jsonl",
+        "result": "disallowed",
+        "step": 3
+      }
+    ]
   }
 }
