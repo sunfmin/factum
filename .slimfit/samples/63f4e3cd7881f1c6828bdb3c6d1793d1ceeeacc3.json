@@ -1,0 +1,41 @@
+{
+  "tip": "63f4e3cd7881f1c6828bdb3c6d1793d1ceeeacc3",
+  "from": "c20994b1d1b30463aa08edc1ed601457589f9150",
+  "pool": 9,
+  "drawn": {
+    "rust": [
+      {
+        "name": "crates/sqlite/src/schema.rs:177:14: replace > with == in migrate",
+        "outcome": "killed"
+      },
+      {
+        "name": "crates/sqlite/src/lib.rs:66:9: replace SqliteStore::open -> Result<SqliteStore> with Ok(Default::default())",
+        "outcome": "unviable"
+      },
+      {
+        "name": "crates/sqlite/src/schema.rs:177:14: replace > with < in migrate",
+        "outcome": "killed"
+      },
+      {
+        "name": "crates/sqlite/src/schema.rs:158:5: replace migrate -> Result<()> with Ok(())",
+        "outcome": "killed"
+      },
+      {
+        "name": "crates/sqlite/src/lib.rs:93:9: replace SqliteStore::write -> Result<T> with Ok(Default::default())",
+        "outcome": "unviable"
+      },
+      {
+        "name": "crates/sqlite/src/schema.rs:19:5: replace open -> Result<Connection> with Ok(Default::default())",
+        "outcome": "unviable"
+      },
+      {
+        "name": "crates/sqlite/src/schema.rs:147:5: replace add_column -> rusqlite::Result<()> with Ok(())",
+        "outcome": "killed"
+      },
+      {
+        "name": "crates/sqlite/src/schema.rs:167:18: replace <= with > in migrate",
+        "outcome": "killed"
+      }
+    ]
+  }
+}

@@ -181,6 +181,7 @@ macro_rules! suite {
             a_process_starts_once_on_the_event_it_starts_on,
             a_worker_claims_heartbeats_and_finishes_a_task,
             a_failed_attempt_is_tried_again,
+            what_failed_together_comes_back_spread_by_its_jitter,
             a_task_whose_lease_ran_out_is_taken_over,
             a_result_whose_lease_ran_out_meanwhile_is_refused,
             a_wake_while_a_runner_holds_the_process_is_not_lost,

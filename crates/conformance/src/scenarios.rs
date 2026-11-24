@@ -822,16 +822,11 @@ pub async fn an_at_most_once_call_whose_answer_was_lost_ends_unknown<B: Backend>
 pub async fn a_call_whose_lease_runs_out_on_every_attempt_ends_unknown<B: Backend>(b: &B) {
     let w = World::new(b);
     let (a, flaky) = w.flaky("a");
-    // Every answer of a charge is lost, as when each call outlives the
-    // action's timeout; only its end without a call is recorded.
-    flaky.lose_every(|u| {
-        u.appends
-            .iter()
-            .flat_map(|a| &a.events)
-            .any(|e| e.data["key"] == "charge" && e.data["outcome"].get("ok").is_some())
-    });
     let (o, p) = checkout(&a, 500).await;
     for attempt in 1..=3 {
+        // Every answer of a charge is lost, as when each call outlives the
+        // action's timeout; only its end without a call is recorded.
+        flaky.crash_on(|u| records_step(u, "charge"));
         assert!(a.settle().await.is_err());
         assert_eq!(w.payments.calls(), attempt);
         w.advance(30_000);
@@ -1090,6 +1085,55 @@ pub async fn a_failed_attempt_is_tried_again<B: Backend>(b: &B) {
     assert_eq!(
         e.process(p).await.unwrap().progress.outcome("pack"),
         Some(&Outcome::Failed("jammed again".into()))
+    );
+}
+
+pub async fn what_failed_together_comes_back_spread_by_its_jitter<B: Backend>(b: &B) {
+    let w = World::new(b);
+    let e = w.engine_with(
+        factum::Model::new()
+            .command::<crate::domain::PlaceOrder>()
+            .command::<crate::domain::PayOrder>()
+            .process::<crate::domain::FulfilProcess>()
+            .task(factum::TaskType {
+                retry: factum::RetryPolicy {
+                    attempts: 2,
+                    backoff_ms: 1_000,
+                    jitter_percent: 50,
+                    ..factum::RetryPolicy::default()
+                },
+                ..factum::TaskType::new("pack")
+            }),
+        "a",
+    );
+    const N: usize = 8;
+    for _ in 0..N {
+        fulfilling(&e).await;
+    }
+    for _ in 0..N {
+        let t = e.claim_task("pack", "w1", 60_000).await.unwrap().unwrap();
+        e.finish_task(&t, Err("jammed".into()), "w1").await.unwrap();
+    }
+    // A second's backoff, spread by half of it: each comes back within
+    // 500..=1_500 ms, and not all at once.
+    w.advance(499);
+    assert!(
+        e.claim_task("pack", "w2", 60_000).await.unwrap().is_none(),
+        "none comes back sooner than its backoff less half"
+    );
+    let mut back_at = Vec::new();
+    for at in (500..=1_500).step_by(100) {
+        w.advance(if at == 500 { 1 } else { 100 });
+        while let Some(t) = e.claim_task("pack", "w2", 60_000).await.unwrap() {
+            assert_eq!(t.attempt, 2);
+            back_at.push(at);
+        }
+    }
+    assert_eq!(back_at.len(), N, "each is back by its backoff plus half");
+    back_at.dedup();
+    assert!(
+        back_at.len() > 1,
+        "what failed together does not come back together: {back_at:?}"
     );
 }
 
