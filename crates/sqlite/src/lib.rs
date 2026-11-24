@@ -9,27 +9,23 @@
 //! Each handle owns one connection on a thread of its own, so the async
 //! methods never block the caller's runtime; they need no particular one.
 //!
-//! A projection's table is a table of its own, `"rows:<projection>:<table>"`:
-//! the key, the row as JSON, and each declared column generated from the row
-//! (`json_extract`), indexed as declared, so a query filters and orders in SQL.
+//! A projection's tables are SQL tables of their own (`tables`).
 
 mod schema;
+mod tables;
 mod thread;
 
 use std::path::{Path, PathBuf};
 
 use factum_core::{
-    Event, Instant, Meta, Position, Query, RowOp, StreamId, Table, Uuid, Value, Version, Work,
-    WorkChange, WorkKind,
+    Event, Instant, Meta, Position, Query, StreamId, Table, Uuid, Value, Version, Work, WorkChange,
+    WorkKind,
 };
 use factum_store::{
     Answer, Batch, Checkpoint, Claim, DeadLetter, Result, Snapshot, Store, StoreError, Unit,
-    apply_op, check_batch, check_unit, claim_row, op_target, read_answer, release_row, wake_row,
+    check_batch, check_unit, claim_row, read_answer, release_row, wake_row,
 };
-use rusqlite::types::Value as Sql;
-use rusqlite::{
-    Connection, OptionalExtension, Row, Transaction, TransactionBehavior, params, params_from_iter,
-};
+use rusqlite::{Connection, OptionalExtension, Row, Transaction, TransactionBehavior, params};
 
 use crate::thread::Worker;
 
@@ -316,121 +312,6 @@ fn change(tx: &Transaction, change: &WorkChange) -> Result<()> {
     .map_err(backend)
 }
 
-// ---- projection tables ----
-
-/// Quotes an identifier.
-fn ident(s: &str) -> String {
-    format!("\"{}\"", s.replace('"', "\"\""))
-}
-
-fn table_name(projection: &str, table: &str) -> String {
-    ident(&format!("rows:{projection}:{table}"))
-}
-
-fn has_table(conn: &Connection, projection: &str, table: &str) -> Result<bool> {
-    conn.query_row(
-        "SELECT 1 FROM projection_tables WHERE projection = ?1 AND tbl = ?2",
-        params![projection, table],
-        |_| Ok(()),
-    )
-    .optional()
-    .map(|f| f.is_some())
-    .map_err(backend)
-}
-
-fn create_table(tx: &Transaction, projection: &str, table: &Table) -> Result<()> {
-    let name = table_name(projection, &table.name);
-    let mut columns = vec![
-        "key TEXT PRIMARY KEY".to_string(),
-        "row TEXT NOT NULL".to_string(),
-    ];
-    for c in &table.columns {
-        columns.push(format!(
-            "{} GENERATED ALWAYS AS (json_extract(row, '$.{c}')) VIRTUAL",
-            ident(c)
-        ));
-    }
-    tx.execute_batch(&format!("CREATE TABLE {name} ({})", columns.join(", ")))
-        .map_err(backend)?;
-    for (n, index) in table.indexes.iter().enumerate() {
-        let on: Vec<String> = index.iter().map(|c| ident(c)).collect();
-        let index_name = ident(&format!("index:{projection}:{}:{n}", table.name));
-        tx.execute_batch(&format!(
-            "CREATE INDEX {index_name} ON {name} ({})",
-            on.join(", ")
-        ))
-        .map_err(backend)?;
-    }
-    tx.execute(
-        "INSERT INTO projection_tables (projection, tbl) VALUES (?1, ?2)",
-        params![projection, table.name],
-    )
-    .map(|_| ())
-    .map_err(backend)
-}
-
-fn read_row(conn: &Connection, projection: &str, table: &str, key: &str) -> Result<Option<Value>> {
-    if !has_table(conn, projection, table)? {
-        return Ok(None);
-    }
-    let sql = format!(
-        "SELECT row FROM {} WHERE key = ?1",
-        table_name(projection, table)
-    );
-    let found: Option<String> = conn
-        .query_row(&sql, [key], |r| r.get(0))
-        .optional()
-        .map_err(backend)?;
-    found.map(|s| parse(&s)).transpose()
-}
-
-fn apply_ops(tx: &Transaction, projection: &str, ops: &[RowOp]) -> Result<()> {
-    for op in ops {
-        let (table, key) = op_target(op);
-        let name = table_name(projection, table);
-        match apply_op(read_row(tx, projection, table, key)?, op) {
-            Some(row) => tx.execute(
-                &format!("INSERT OR REPLACE INTO {name} (key, row) VALUES (?1, ?2)"),
-                params![key, json(&row)?],
-            ),
-            None => tx.execute(&format!("DELETE FROM {name} WHERE key = ?1"), [key]),
-        }
-        .map_err(backend)?;
-    }
-    Ok(())
-}
-
-fn keyed_rows(
-    conn: &Connection,
-    sql: &str,
-    args: impl rusqlite::Params,
-) -> Result<Vec<(String, Value)>> {
-    let mut stmt = conn.prepare(sql).map_err(backend)?;
-    let rows = stmt
-        .query_map(args, |r| {
-            Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?))
-        })
-        .map_err(backend)?;
-    rows.map(|r| {
-        let (k, v) = r.map_err(backend)?;
-        Ok((k, parse(&v)?))
-    })
-    .collect()
-}
-
-/// A JSON value as SQLite compares it with what `json_extract` gives.
-fn scalar(v: &Value) -> Sql {
-    match v {
-        Value::Null => Sql::Null,
-        Value::Bool(b) => Sql::Integer(i64::from(*b)),
-        Value::Number(n) => n
-            .as_i64()
-            .map_or_else(|| Sql::Real(n.as_f64().unwrap_or(0.0)), Sql::Integer),
-        Value::String(s) => Sql::Text(s.clone()),
-        other => Sql::Text(other.to_string()),
-    }
-}
-
 impl Store for SqliteStore {
     async fn read_stream(&self, stream: &StreamId, after: Version) -> Result<Vec<Event>> {
         let stream = stream.to_string();
@@ -649,19 +530,8 @@ impl Store for SqliteStore {
         let (projection, schema, tables) =
             (projection.to_string(), schema.to_string(), tables.to_vec());
         self.write(move |tx| {
-            let old: Vec<String> = {
-                let mut stmt = tx.prepare("SELECT tbl FROM projection_tables WHERE projection = ?1").map_err(backend)?;
-                let rows = stmt.query_map([&projection], |r| r.get(0)).map_err(backend)?;
-                rows.collect::<rusqlite::Result<_>>().map_err(backend)?
-            };
-            for t in old {
-                tx.execute_batch(&format!("DROP TABLE IF EXISTS {}", table_name(&projection, &t))).map_err(backend)?;
-            }
-            tx.execute("DELETE FROM projection_tables WHERE projection = ?1", [&projection]).map_err(backend)?;
+            tables::reset(tx, &projection, &tables)?;
             tx.execute("DELETE FROM dead_letters WHERE projection = ?1", [&projection]).map_err(backend)?;
-            for t in &tables {
-                create_table(tx, &projection, t)?;
-            }
             tx.execute(
                 "INSERT OR REPLACE INTO checkpoints (projection, version, schema, position, stopped) VALUES (?1, ?2, ?3, 0, 0)",
                 params![projection, version, schema],
@@ -689,13 +559,13 @@ impl Store for SqliteStore {
                         .map(|f| f.is_some())
                         .map_err(backend)
                 },
-                |table| has_table(tx, &batch.projection, table),
+                |table| tables::has(tx, &batch.projection, table),
             )?;
             for e in &batch.resolved {
                 tx.execute("DELETE FROM dead_letters WHERE projection = ?1 AND event = ?2", params![batch.projection, e.to_string()])
                     .map_err(backend)?;
             }
-            apply_ops(tx, &batch.projection, &batch.ops)?;
+            tables::apply(tx, &batch.projection, &batch.ops)?;
             for d in &batch.dead {
                 tx.execute(
                     "INSERT INTO dead_letters (projection, position, event, stream, version, error) VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
@@ -715,58 +585,19 @@ impl Store for SqliteStore {
 
     async fn query(&self, projection: &str, query: &Query) -> Result<Vec<(String, Value)>> {
         let (projection, query) = (projection.to_string(), query.clone());
-        self.run(move |c| {
-            if !has_table(c, &projection, &query.table)? {
-                return Ok(Vec::new());
-            }
-            let mut sql = format!(
-                "SELECT key, row FROM {}",
-                table_name(&projection, &query.table)
-            );
-            let mut args = Vec::new();
-            for (n, f) in query.filters.iter().enumerate() {
-                sql.push_str(if n == 0 { " WHERE " } else { " AND " });
-                sql.push_str(&format!("{} {} ?{}", ident(&f.column), f.op.sql(), n + 1));
-                args.push(scalar(&f.value));
-            }
-            sql.push_str(" ORDER BY ");
-            for o in &query.order {
-                sql.push_str(&format!(
-                    "{} {}, ",
-                    ident(&o.column),
-                    if o.descending { "DESC" } else { "ASC" }
-                ));
-            }
-            sql.push_str("key");
-            if let Some(limit) = query.limit {
-                sql.push_str(&format!(" LIMIT {limit}"));
-            }
-            keyed_rows(c, &sql, params_from_iter(args))
-        })
-        .await
+        self.run(move |c| tables::query(c, &projection, &query))
+            .await
     }
 
     async fn rows(&self, projection: &str, table: &str) -> Result<Vec<(String, Value)>> {
         let (projection, table) = (projection.to_string(), table.to_string());
-        self.run(move |c| {
-            if !has_table(c, &projection, &table)? {
-                return Ok(Vec::new());
-            }
-            keyed_rows(
-                c,
-                &format!(
-                    "SELECT key, row FROM {} ORDER BY key",
-                    table_name(&projection, &table)
-                ),
-                [],
-            )
-        })
-        .await
+        self.run(move |c| tables::rows(c, &projection, &table))
+            .await
     }
 
     async fn row(&self, projection: &str, table: &str, key: &str) -> Result<Option<Value>> {
         let (projection, table, key) = (projection.to_string(), table.to_string(), key.to_string());
-        self.run(move |c| read_row(c, &projection, &table, &key))
+        self.run(move |c| tables::row(c, &projection, &table, &key))
             .await
     }
 
