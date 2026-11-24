@@ -9,27 +9,24 @@
 //! Each handle owns one connection on a thread of its own, so the async
 //! methods never block the caller's runtime; they need no particular one.
 //!
-//! A projection's table is a table of its own, `"rows:<projection>:<table>"`:
-//! the key, the row as JSON, and each declared column generated from the row
-//! (`json_extract`), indexed as declared, so a query filters and orders in SQL.
+//! The events log is read and written here; the work table (`work`) and a
+//! projection's tables (`tables`) keep their columns and SQL to themselves.
 
 mod schema;
+mod tables;
 mod thread;
+mod work;
 
 use std::path::{Path, PathBuf};
 
 use factum_core::{
-    Event, Instant, Meta, Position, Query, RowOp, StreamId, Table, Uuid, Value, Version, Work,
-    WorkChange, WorkKind,
+    Event, Instant, Meta, Position, Query, StreamId, Table, Uuid, Value, Version, Work, WorkKind,
 };
 use factum_store::{
     Answer, Batch, Checkpoint, Claim, DeadLetter, Result, Snapshot, Store, StoreError, Unit,
-    apply_op, check_batch, check_unit, claim_row, op_target, read_answer, release_row, wake_row,
+    check_batch, check_unit, read_answer,
 };
-use rusqlite::types::Value as Sql;
-use rusqlite::{
-    Connection, OptionalExtension, Row, Transaction, TransactionBehavior, params, params_from_iter,
-};
+use rusqlite::{Connection, OptionalExtension, Row, Transaction, TransactionBehavior, params};
 
 use crate::thread::Worker;
 
@@ -143,294 +140,6 @@ fn events(conn: &Connection, sql: &str, args: impl rusqlite::Params) -> Result<V
         .collect()
 }
 
-const WORK_COLUMNS: &str = "kind, id, name, process, step, payload, due, ordering_key, attempts, lease, holder, lease_until, claimed_at, seq, woken, taken_over";
-
-/// A work row as read, before its columns are decoded.
-struct WorkRow {
-    kind: String,
-    id: String,
-    process: Option<String>,
-    lease: Option<String>,
-    name: String,
-    step: Option<String>,
-    payload: String,
-    due: i64,
-    ordering_key: Option<String>,
-    attempts: i64,
-    holder: Option<String>,
-    lease_until: Option<i64>,
-    claimed_at: Option<i64>,
-    seq: i64,
-    woken: Option<i64>,
-    taken_over: bool,
-}
-
-fn work(row: &Row) -> rusqlite::Result<WorkRow> {
-    Ok(WorkRow {
-        kind: row.get(0)?,
-        id: row.get(1)?,
-        process: row.get(3)?,
-        lease: row.get(9)?,
-        name: row.get(2)?,
-        step: row.get(4)?,
-        payload: row.get(5)?,
-        due: row.get(6)?,
-        ordering_key: row.get(7)?,
-        attempts: row.get(8)?,
-        holder: row.get(10)?,
-        lease_until: row.get(11)?,
-        claimed_at: row.get(12)?,
-        seq: row.get(13)?,
-        woken: row.get(14)?,
-        taken_over: row.get(15)?,
-    })
-}
-
-/// A work row decoded, with its sequence number and the wake it keeps; a
-/// column it cannot decode is an error, never a guess.
-fn to_work(r: WorkRow) -> Result<Stored> {
-    let w = Work {
-        kind: WorkKind::parse(&r.kind)
-            .ok_or_else(|| backend(format!("work row of unknown kind {:?}", r.kind)))?,
-        id: uuid(&r.id)?,
-        name: r.name,
-        process: r.process.as_deref().map(uuid).transpose()?,
-        step: r.step,
-        payload: parse(&r.payload)?,
-        due: Instant(r.due),
-        ordering_key: r.ordering_key,
-        attempts: r.attempts as u32,
-        lease: r.lease.as_deref().map(uuid).transpose()?,
-        holder: r.holder,
-        lease_until: r.lease_until.map(Instant),
-        claimed_at: r.claimed_at.map(Instant),
-        taken_over: r.taken_over,
-    };
-    Ok(Stored {
-        work: w,
-        seq: r.seq,
-        woken: r.woken.map(Instant),
-    })
-}
-
-struct Stored {
-    work: Work,
-    seq: i64,
-    woken: Option<Instant>,
-}
-
-fn works(conn: &Connection, sql: &str, args: impl rusqlite::Params) -> Result<Vec<Stored>> {
-    let mut stmt = conn.prepare(sql).map_err(backend)?;
-    let rows = stmt.query_map(args, work).map_err(backend)?;
-    rows.map(|r| r.map_err(backend).and_then(to_work)).collect()
-}
-
-/// Writes back what a row transition of the store crate changed.
-fn rewrite(tx: &Transaction, w: &Work, woken: Option<Instant>) -> Result<()> {
-    tx.execute(
-        "UPDATE work SET due = ?3, attempts = ?4, lease = ?5, holder = ?6, lease_until = ?7, claimed_at = ?8,
-            taken_over = ?9, woken = ?10
-         WHERE kind = ?1 AND id = ?2",
-        params![
-            w.kind.as_str(),
-            w.id.to_string(),
-            w.due.0,
-            w.attempts,
-            w.lease.map(|l| l.to_string()),
-            w.holder,
-            w.lease_until.map(|i| i.0),
-            w.claimed_at.map(|i| i.0),
-            w.taken_over,
-            woken.map(|i| i.0),
-        ],
-    )
-    .map(|_| ())
-    .map_err(backend)
-}
-
-/// Moves a row, if it is there, by a transition of the store crate: read,
-/// changed, written back, in the one write transaction.
-fn transition(
-    tx: &Transaction,
-    kind: WorkKind,
-    id: Uuid,
-    f: impl FnOnce(&mut Work, &mut Option<Instant>),
-) -> Result<()> {
-    let sql = format!("SELECT {WORK_COLUMNS} FROM work WHERE kind = ?1 AND id = ?2");
-    match works(tx, &sql, params![kind.as_str(), id.to_string()])?.pop() {
-        Some(Stored {
-            mut work,
-            mut woken,
-            ..
-        }) => {
-            f(&mut work, &mut woken);
-            rewrite(tx, &work, woken)
-        }
-        None => Ok(()),
-    }
-}
-
-fn lease_of(tx: &Transaction, kind: WorkKind, id: Uuid) -> Result<Option<String>> {
-    tx.query_row(
-        "SELECT lease FROM work WHERE kind = ?1 AND id = ?2",
-        params![kind.as_str(), id.to_string()],
-        |r| r.get(0),
-    )
-    .optional()
-    .map_err(backend)
-    .map(Option::flatten)
-}
-
-fn change(tx: &Transaction, change: &WorkChange) -> Result<()> {
-    match change {
-        WorkChange::Put(w) => tx.execute(
-            "INSERT OR IGNORE INTO work (kind, id, seq, name, process, step, payload, due, ordering_key, attempts)
-             VALUES (?1, ?2, (SELECT COALESCE(MAX(seq), 0) + 1 FROM work), ?3, ?4, ?5, ?6, ?7, ?8, ?9)",
-            params![
-                w.kind.as_str(),
-                w.id.to_string(),
-                w.name,
-                w.process.map(|p| p.to_string()),
-                w.step,
-                json(&w.payload)?,
-                w.due.0,
-                w.ordering_key,
-                w.attempts,
-            ],
-        ),
-        WorkChange::Wake { kind, id, due } => {
-            return transition(tx, *kind, *id, |w, woken| wake_row(w, woken, *due));
-        }
-        WorkChange::Done { kind, id } => {
-            tx.execute("DELETE FROM work WHERE kind = ?1 AND id = ?2", params![kind.as_str(), id.to_string()])
-        }
-        WorkChange::Release { kind, id, due, .. } => {
-            return transition(tx, *kind, *id, |w, woken| release_row(w, woken, *due));
-        }
-        WorkChange::Pace { name, key, not_before } => tx.execute(
-            "INSERT OR REPLACE INTO paces (name, key, not_before) VALUES (?1, ?2, ?3)",
-            params![name, key, not_before.0],
-        ),
-    }
-    .map(|_| ())
-    .map_err(backend)
-}
-
-// ---- projection tables ----
-
-/// Quotes an identifier.
-fn ident(s: &str) -> String {
-    format!("\"{}\"", s.replace('"', "\"\""))
-}
-
-fn table_name(projection: &str, table: &str) -> String {
-    ident(&format!("rows:{projection}:{table}"))
-}
-
-fn has_table(conn: &Connection, projection: &str, table: &str) -> Result<bool> {
-    conn.query_row(
-        "SELECT 1 FROM projection_tables WHERE projection = ?1 AND tbl = ?2",
-        params![projection, table],
-        |_| Ok(()),
-    )
-    .optional()
-    .map(|f| f.is_some())
-    .map_err(backend)
-}
-
-fn create_table(tx: &Transaction, projection: &str, table: &Table) -> Result<()> {
-    let name = table_name(projection, &table.name);
-    let mut columns = vec![
-        "key TEXT PRIMARY KEY".to_string(),
-        "row TEXT NOT NULL".to_string(),
-    ];
-    for c in &table.columns {
-        columns.push(format!(
-            "{} GENERATED ALWAYS AS (json_extract(row, '$.{c}')) VIRTUAL",
-            ident(c)
-        ));
-    }
-    tx.execute_batch(&format!("CREATE TABLE {name} ({})", columns.join(", ")))
-        .map_err(backend)?;
-    for (n, index) in table.indexes.iter().enumerate() {
-        let on: Vec<String> = index.iter().map(|c| ident(c)).collect();
-        let index_name = ident(&format!("index:{projection}:{}:{n}", table.name));
-        tx.execute_batch(&format!(
-            "CREATE INDEX {index_name} ON {name} ({})",
-            on.join(", ")
-        ))
-        .map_err(backend)?;
-    }
-    tx.execute(
-        "INSERT INTO projection_tables (projection, tbl) VALUES (?1, ?2)",
-        params![projection, table.name],
-    )
-    .map(|_| ())
-    .map_err(backend)
-}
-
-fn read_row(conn: &Connection, projection: &str, table: &str, key: &str) -> Result<Option<Value>> {
-    if !has_table(conn, projection, table)? {
-        return Ok(None);
-    }
-    let sql = format!(
-        "SELECT row FROM {} WHERE key = ?1",
-        table_name(projection, table)
-    );
-    let found: Option<String> = conn
-        .query_row(&sql, [key], |r| r.get(0))
-        .optional()
-        .map_err(backend)?;
-    found.map(|s| parse(&s)).transpose()
-}
-
-fn apply_ops(tx: &Transaction, projection: &str, ops: &[RowOp]) -> Result<()> {
-    for op in ops {
-        let (table, key) = op_target(op);
-        let name = table_name(projection, table);
-        match apply_op(read_row(tx, projection, table, key)?, op) {
-            Some(row) => tx.execute(
-                &format!("INSERT OR REPLACE INTO {name} (key, row) VALUES (?1, ?2)"),
-                params![key, json(&row)?],
-            ),
-            None => tx.execute(&format!("DELETE FROM {name} WHERE key = ?1"), [key]),
-        }
-        .map_err(backend)?;
-    }
-    Ok(())
-}
-
-fn keyed_rows(
-    conn: &Connection,
-    sql: &str,
-    args: impl rusqlite::Params,
-) -> Result<Vec<(String, Value)>> {
-    let mut stmt = conn.prepare(sql).map_err(backend)?;
-    let rows = stmt
-        .query_map(args, |r| {
-            Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?))
-        })
-        .map_err(backend)?;
-    rows.map(|r| {
-        let (k, v) = r.map_err(backend)?;
-        Ok((k, parse(&v)?))
-    })
-    .collect()
-}
-
-/// A JSON value as SQLite compares it with what `json_extract` gives.
-fn scalar(v: &Value) -> Sql {
-    match v {
-        Value::Null => Sql::Null,
-        Value::Bool(b) => Sql::Integer(i64::from(*b)),
-        Value::Number(n) => n
-            .as_i64()
-            .map_or_else(|| Sql::Real(n.as_f64().unwrap_or(0.0)), Sql::Integer),
-        Value::String(s) => Sql::Text(s.clone()),
-        other => Sql::Text(other.to_string()),
-    }
-}
-
 impl Store for SqliteStore {
     async fn read_stream(&self, stream: &StreamId, after: Version) -> Result<Vec<Event>> {
         let stream = stream.to_string();
@@ -462,7 +171,7 @@ impl Store for SqliteStore {
                 |key| {
                     tx.query_row(ANSWERED, [key.to_string()], |r| r.get(0)).map_err(backend)
                 },
-                |kind, id| Ok(lease_of(tx, kind, id)?.and_then(|l| l.parse().ok())),
+                |kind, id| work::lease(tx, kind, id),
             )?;
             let mut committed = Vec::new();
             for a in &unit.appends {
@@ -478,7 +187,7 @@ impl Store for SqliteStore {
                 }
             }
             for c in &unit.work {
-                change(tx, c)?;
+                work::change(tx, c)?;
             }
             Ok(committed)
         })
@@ -495,43 +204,7 @@ impl Store for SqliteStore {
     }
 
     async fn claim(&self, claim: Claim) -> Result<Vec<Work>> {
-        self.write(move |tx| {
-            let sql = format!(
-                "SELECT {WORK_COLUMNS} FROM work
-                 WHERE kind = ?1 AND due <= ?2 AND (lease_until IS NULL OR lease_until <= ?2)
-                 ORDER BY due, seq"
-            );
-            let mut claimed = Vec::new();
-            for Stored { work: mut w, seq, mut woken } in works(tx, &sql, params![claim.kind.as_str(), claim.now.0])? {
-                if claimed.len() >= claim.limit {
-                    break;
-                }
-                if claim.names.as_ref().is_some_and(|n| !n.contains(&w.name)) {
-                    continue;
-                }
-                if let Some(key) = &w.ordering_key {
-                    let first: i64 = tx
-                        .query_row(
-                            "SELECT MIN(seq) FROM work WHERE kind = ?1 AND name = ?2 AND ordering_key = ?3",
-                            params![w.kind.as_str(), w.name, key],
-                            |r| r.get(0),
-                        )
-                        .map_err(backend)?;
-                    let pace: Option<i64> = tx
-                        .query_row("SELECT not_before FROM paces WHERE name = ?1 AND key = ?2", params![w.name, key], |r| r.get(0))
-                        .optional()
-                        .map_err(backend)?;
-                    if first != seq || pace.is_some_and(|p| p > claim.now.0) {
-                        continue;
-                    }
-                }
-                claim_row(&mut w, &mut woken, &claim);
-                rewrite(tx, &w, woken)?;
-                claimed.push(w);
-            }
-            Ok(claimed)
-        })
-        .await
+        self.write(move |tx| work::claim(tx, &claim)).await
     }
 
     async fn renew(
@@ -542,41 +215,17 @@ impl Store for SqliteStore {
         now: Instant,
         until: Instant,
     ) -> Result<bool> {
-        self.write(move |tx| {
-            let n = tx
-                .execute(
-                    "UPDATE work SET lease_until = ?5 WHERE kind = ?1 AND id = ?2 AND lease = ?3 AND lease_until > ?4",
-                    params![kind.as_str(), id.to_string(), lease.to_string(), now.0, until.0],
-                )
-                .map_err(backend)?;
-            Ok(n == 1)
-        })
-        .await
+        self.write(move |tx| work::renew(tx, kind, id, lease, now, until))
+            .await
     }
 
     async fn work(&self, kind: WorkKind, id: Uuid) -> Result<Option<Work>> {
-        self.run(move |c| {
-            let sql = format!("SELECT {WORK_COLUMNS} FROM work WHERE kind = ?1 AND id = ?2");
-            Ok(works(c, &sql, params![kind.as_str(), id.to_string()])?
-                .into_iter()
-                .next()
-                .map(|s| s.work))
-        })
-        .await
+        self.run(move |c| work::get(c, kind, id)).await
     }
 
     async fn work_named(&self, kind: WorkKind, name: &str) -> Result<Vec<Work>> {
         let name = name.to_string();
-        self.run(move |c| {
-            let sql = format!(
-                "SELECT {WORK_COLUMNS} FROM work WHERE kind = ?1 AND name = ?2 ORDER BY seq"
-            );
-            Ok(works(c, &sql, params![kind.as_str(), name])?
-                .into_iter()
-                .map(|s| s.work)
-                .collect())
-        })
-        .await
+        self.run(move |c| work::named(c, kind, &name)).await
     }
 
     async fn snapshot(&self, stream: &StreamId) -> Result<Option<Snapshot>> {
@@ -649,19 +298,8 @@ impl Store for SqliteStore {
         let (projection, schema, tables) =
             (projection.to_string(), schema.to_string(), tables.to_vec());
         self.write(move |tx| {
-            let old: Vec<String> = {
-                let mut stmt = tx.prepare("SELECT tbl FROM projection_tables WHERE projection = ?1").map_err(backend)?;
-                let rows = stmt.query_map([&projection], |r| r.get(0)).map_err(backend)?;
-                rows.collect::<rusqlite::Result<_>>().map_err(backend)?
-            };
-            for t in old {
-                tx.execute_batch(&format!("DROP TABLE IF EXISTS {}", table_name(&projection, &t))).map_err(backend)?;
-            }
-            tx.execute("DELETE FROM projection_tables WHERE projection = ?1", [&projection]).map_err(backend)?;
+            tables::reset(tx, &projection, &tables)?;
             tx.execute("DELETE FROM dead_letters WHERE projection = ?1", [&projection]).map_err(backend)?;
-            for t in &tables {
-                create_table(tx, &projection, t)?;
-            }
             tx.execute(
                 "INSERT OR REPLACE INTO checkpoints (projection, version, schema, position, stopped) VALUES (?1, ?2, ?3, 0, 0)",
                 params![projection, version, schema],
@@ -689,13 +327,13 @@ impl Store for SqliteStore {
                         .map(|f| f.is_some())
                         .map_err(backend)
                 },
-                |table| has_table(tx, &batch.projection, table),
+                |table| tables::has(tx, &batch.projection, table),
             )?;
             for e in &batch.resolved {
                 tx.execute("DELETE FROM dead_letters WHERE projection = ?1 AND event = ?2", params![batch.projection, e.to_string()])
                     .map_err(backend)?;
             }
-            apply_ops(tx, &batch.projection, &batch.ops)?;
+            tables::apply(tx, &batch.projection, &batch.ops)?;
             for d in &batch.dead {
                 tx.execute(
                     "INSERT INTO dead_letters (projection, position, event, stream, version, error) VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
@@ -715,58 +353,19 @@ impl Store for SqliteStore {
 
     async fn query(&self, projection: &str, query: &Query) -> Result<Vec<(String, Value)>> {
         let (projection, query) = (projection.to_string(), query.clone());
-        self.run(move |c| {
-            if !has_table(c, &projection, &query.table)? {
-                return Ok(Vec::new());
-            }
-            let mut sql = format!(
-                "SELECT key, row FROM {}",
-                table_name(&projection, &query.table)
-            );
-            let mut args = Vec::new();
-            for (n, f) in query.filters.iter().enumerate() {
-                sql.push_str(if n == 0 { " WHERE " } else { " AND " });
-                sql.push_str(&format!("{} {} ?{}", ident(&f.column), f.op.sql(), n + 1));
-                args.push(scalar(&f.value));
-            }
-            sql.push_str(" ORDER BY ");
-            for o in &query.order {
-                sql.push_str(&format!(
-                    "{} {}, ",
-                    ident(&o.column),
-                    if o.descending { "DESC" } else { "ASC" }
-                ));
-            }
-            sql.push_str("key");
-            if let Some(limit) = query.limit {
-                sql.push_str(&format!(" LIMIT {limit}"));
-            }
-            keyed_rows(c, &sql, params_from_iter(args))
-        })
-        .await
+        self.run(move |c| tables::query(c, &projection, &query))
+            .await
     }
 
     async fn rows(&self, projection: &str, table: &str) -> Result<Vec<(String, Value)>> {
         let (projection, table) = (projection.to_string(), table.to_string());
-        self.run(move |c| {
-            if !has_table(c, &projection, &table)? {
-                return Ok(Vec::new());
-            }
-            keyed_rows(
-                c,
-                &format!(
-                    "SELECT key, row FROM {} ORDER BY key",
-                    table_name(&projection, &table)
-                ),
-                [],
-            )
-        })
-        .await
+        self.run(move |c| tables::query(c, &projection, &Query::table(&table)))
+            .await
     }
 
     async fn row(&self, projection: &str, table: &str, key: &str) -> Result<Option<Value>> {
         let (projection, table, key) = (projection.to_string(), table.to_string(), key.to_string());
-        self.run(move |c| read_row(c, &projection, &table, &key))
+        self.run(move |c| tables::row(c, &projection, &table, &key))
             .await
     }
 
