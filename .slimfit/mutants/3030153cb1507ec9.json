@@ -1,0 +1,11 @@
+{
+  "tree": "0a1d31421cb76632dcb76675cfc96fd0e47c851e+d1fba762150c532c",
+  "picker": "codex:01a20fa9-02d1-7861-b894-fe7be3d27550:default",
+  "author": "claude-code:9afacf07-716d-5573-989f-7722a7a6a85b:opus",
+  "none": "The merged test still runs the same assertions for schema versions 3 and 5, and no listed mutant targets the new failure aggregation.",
+  "removed_tests": {
+    "rust": [
+      "crates/sqlite/tests/conformance.rs:200: copies_an_older_binary_kept_later_answer_the_same_once_opened"
+    ]
+  }
+}

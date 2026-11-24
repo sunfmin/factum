@@ -822,16 +822,11 @@ pub async fn an_at_most_once_call_whose_answer_was_lost_ends_unknown<B: Backend>
 pub async fn a_call_whose_lease_runs_out_on_every_attempt_ends_unknown<B: Backend>(b: &B) {
     let w = World::new(b);
     let (a, flaky) = w.flaky("a");
-    // Every answer of a charge is lost, as when each call outlives the
-    // action's timeout; only its end without a call is recorded.
-    flaky.lose_every(|u| {
-        u.appends
-            .iter()
-            .flat_map(|a| &a.events)
-            .any(|e| e.data["key"] == "charge" && e.data["outcome"].get("ok").is_some())
-    });
     let (o, p) = checkout(&a, 500).await;
     for attempt in 1..=3 {
+        // Every answer of a charge is lost, as when each call outlives the
+        // action's timeout; only its end without a call is recorded.
+        flaky.crash_on(|u| records_step(u, "charge"));
         assert!(a.settle().await.is_err());
         assert_eq!(w.payments.calls(), attempt);
         w.advance(30_000);
