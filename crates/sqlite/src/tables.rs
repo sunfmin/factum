@@ -1,8 +1,6 @@
-//! A projection's tables, each a SQL table of its own,
-//! `"rows:<projection>:<table>"`: the key, the row as JSON, and each declared
-//! column generated from the row (`json_extract`), indexed as declared, so a
-//! query filters and orders in SQL. How a table is named, made and queried
-//! is held here alone; the store passes projections, tables and keys.
+//! A projection's tables, each `"rows:<projection>:<table>"`: the key, the
+//! row as JSON, and each declared column generated from the row
+//! (`json_extract`), indexed as declared, so a query filters and orders in SQL.
 
 use factum_core::{Query, RowOp, Table, Value};
 use factum_store::{Result, apply_op, op_target};

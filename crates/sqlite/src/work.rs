@@ -1,8 +1,6 @@
-//! The work table: a row per task, call or timer, decoded as `Work` with
-//! the wake it keeps, moved by the store crate's row transitions in the
-//! caller's write transaction. Its columns and how a claim honours ordering
-//! keys and paces are held here alone; the store passes kinds, ids and
-//! changes.
+//! The work table: its columns, decoded as `Work` with the wake it keeps,
+//! moved by the store crate's row transitions in the caller's transaction,
+//! and claimed in due order by ordering key and pace.
 
 use factum_core::{Instant, Uuid, Work, WorkChange, WorkKind};
 use factum_store::{Claim, Result, claim_row, release_row, wake_row};
