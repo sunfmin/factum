@@ -1,0 +1,39 @@
+{
+  "tree": "53ef135176a88e13091e6843c30e13bac906262c+d1fba762150c532c",
+  "picker": "codex:01a20fb1-c9b8-7561-a40c-1c7fade63ada:default",
+  "author": "claude-code:7d560fc3-5ab0-5b7e-b504-d216ea053fe6:opus",
+  "picks": {
+    "rust": [
+      {
+        "name": "crates/sqlite/src/work.rs:222:55: replace > with >= in claim",
+        "why": "This delays a claim exactly at the pace deadline, which tests that advance time past the deadline would miss.",
+        "outcome": "killed",
+        "first_outcome": "killed"
+      },
+      {
+        "name": "crates/sqlite/src/work.rs:261:5: replace named -> Result<Vec<Work>> with Ok(vec![])",
+        "why": "Claiming and fetching work by ID bypass this lookup, so detecting it requires listing a name with stored work.",
+        "outcome": "killed",
+        "first_outcome": "killed"
+      },
+      {
+        "name": "crates/sqlite/src/tables.rs:23:5: replace has -> Result<bool> with Ok(true)",
+        "why": "Operations on declared tables still work, so detecting this requires exercising a missing table.",
+        "outcome": "killed",
+        "first_outcome": "killed"
+      },
+      {
+        "name": "crates/sqlite/src/lib.rs:367:9: replace <impl Store for SqliteStore>::row -> Result<Option<Value>> with Ok(None)",
+        "why": "Projection writes and list queries bypass this entry point, so detecting it requires fetching an existing row by key through the store.",
+        "outcome": "killed",
+        "first_outcome": "killed"
+      },
+      {
+        "name": "crates/sqlite/src/work.rs:203:49: delete ! in claim",
+        "why": "This reverses the name filter and leaves claims with no name filter unaffected.",
+        "outcome": "killed",
+        "first_outcome": "killed"
+      }
+    ]
+  }
+}
