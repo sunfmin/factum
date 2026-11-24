@@ -189,16 +189,21 @@ fn with_copied_answers(path: &Path, version: u32, answers: &[(Uuid, Answer)]) {
     }
 }
 
+/// Each row a schema version the copies were kept at: 3, as factum before
+/// #40 left them; 5, as factorium's host had them, a binary from before #40
+/// still writing after a later one had opened the database.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn answers_kept_as_copies_answer_the_same_once_opened() {
-    copies_answer_the_same_once_opened(3).await;
-}
-
-/// As factorium's host had them: a binary from before #40 still writing
-/// after a later one had opened the database.
-#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn copies_an_older_binary_kept_later_answer_the_same_once_opened() {
-    copies_answer_the_same_once_opened(5).await;
+    let mut failed = Vec::new();
+    for version in [3, 5] {
+        if tokio::spawn(copies_answer_the_same_once_opened(version))
+            .await
+            .is_err()
+        {
+            failed.push(version);
+        }
+    }
+    assert!(failed.is_empty(), "copies kept at schema {failed:?}");
 }
 
 async fn copies_answer_the_same_once_opened(version: u32) {
