@@ -359,7 +359,7 @@ impl Store for SqliteStore {
 
     async fn rows(&self, projection: &str, table: &str) -> Result<Vec<(String, Value)>> {
         let (projection, table) = (projection.to_string(), table.to_string());
-        self.run(move |c| tables::rows(c, &projection, &table))
+        self.run(move |c| tables::query(c, &projection, &Query::table(&table)))
             .await
     }
 

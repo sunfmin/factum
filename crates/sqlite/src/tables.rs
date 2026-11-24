@@ -128,25 +128,6 @@ pub(crate) fn apply(tx: &Transaction, projection: &str, ops: &[RowOp]) -> Result
     Ok(())
 }
 
-/// Every row of a table, by key; none if the table is not there.
-pub(crate) fn rows(
-    conn: &Connection,
-    projection: &str,
-    table: &str,
-) -> Result<Vec<(String, Value)>> {
-    if !has(conn, projection, table)? {
-        return Ok(Vec::new());
-    }
-    keyed_rows(
-        conn,
-        &format!(
-            "SELECT key, row FROM {} ORDER BY key",
-            table_name(projection, table)
-        ),
-        [],
-    )
-}
-
 /// The rows `query` asks for, filtered, ordered and limited in SQL; none if
 /// its table is not there.
 pub(crate) fn query(
