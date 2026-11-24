@@ -109,6 +109,12 @@
     "sentence": "Every lease in factum is a claim on such a row.",
     "source": "SPEC.md:46"
   },
+  "970cf8377511": {
+    "kind": "fixed-often",
+    "mark": "not",
+    "summary": "crates/conformance/src/lib.rs was changed by 2 fixes in 180 days, and no registered promise's check covers it",
+    "why": "lib.rs only registers scenarios in suite!; the fixes added a_writer_that_loses_every_race_gives_up (promise a-writer-gives-up-after-1000-losses, SPEC.md:214), a_result_whose_lease_ran_out_meanwhile_is_refused (renew-only-a-live-lease, SPEC.md:95) and a_wake_while_a_runner_holds_the_process_is_not_lost (work-rows-implied-by-events, SPEC.md:44), all already registered with test checks, whose code truefit cannot see"
+  },
   "995c3cee198c": {
     "mark": "not",
     "sentence": "Business facts go into an append-only log; the rules that decide them are pure functions; and the work that outlives one command — multi-step processes, calls to other systems, tasks for workers, scheduled and recurring commands, waits for events, read models — is driven from the same log, exactly once where it can be and visibly \"unknown\" where it cannot.",
