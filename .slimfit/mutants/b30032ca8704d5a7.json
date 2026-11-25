@@ -1,0 +1,21 @@
+{
+  "tree": "37e71a73cc18e427ed4dd0955bcddd80b00086b3+d1fba762150c532c",
+  "picker": "codex:01a2151c-801f-7de1-96b9-e13ba97eb6a3:default",
+  "author": "claude-code:7ab2991e-9da6-52ed-8055-c570862e8dcb:opus",
+  "picks": {
+    "rust": [
+      {
+        "name": "crates/sqlite/src/tables.rs:23:46: replace != with == in checkpoint",
+        "why": "Checkpoint tests that only assert version, schema, or position would miss an inverted stopped flag.",
+        "outcome": "killed",
+        "first_outcome": "killed"
+      },
+      {
+        "name": "crates/sqlite/src/tables.rs:106:5: replace dead_letters -> Result<Vec<DeadLetter>> with Ok(vec![])",
+        "why": "Tests that only read dead letters after a reset or resolution could pass even if persisted dead letters are never returned.",
+        "outcome": "killed",
+        "first_outcome": "killed"
+      }
+    ]
+  }
+}

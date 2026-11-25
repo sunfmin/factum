@@ -1,13 +1,13 @@
 {
   "suites": {
     "rust": {
-      "prod_lines": 4617,
-      "test_lines": 4407,
-      "tests": 155,
+      "prod_lines": 4681,
+      "test_lines": 4449,
+      "tests": 157,
       "failures": 0,
       "test_seconds": 2.64,
-      "covered_lines": 2998,
-      "uncovered_lines": 120
+      "covered_lines": 3050,
+      "uncovered_lines": 114
     }
   },
   "loosened": [],
@@ -32,12 +32,6 @@
     },
     {
       "suite": "rust",
-      "test": "factum-sqlite::conformance::a_call_whose_lease_runs_out_on_every_attempt_ends_unknown",
-      "hash": "f4274ac39d952f57",
-      "reason": "Its same-shape group is not two tests that differ by literals: it is scenarios::a_call_whose_lease_runs_out_on_every_attempt_ends_unknown instantiated by suite! once per store (factum-conformance::memory, factum-sqlite::conformance), one body and no literal to tabulate. A table over stores would need one crate to depend on both stores, would run the same body per store (no CPU saved), and would hide which store broke; every scenario runs on every store (CLAUDE.md). Its other_test, a_call_whose_lease_was_taken_over_is_not_made, is another guarantee with its own home in scenarios.rs (lib.rs: one scenario per guarantee); they share the world setup, not their assertions."
-    },
-    {
-      "suite": "rust",
       "test": "factum-sqlite::conformance::a_writer_that_loses_every_race_gives_up",
       "hash": "7927bd528ae4858c",
       "reason": "Its same-shape group is not two tests that differ by literals: it is scenarios::a_writer_that_loses_every_race_gives_up instantiated by suite! once per store (factum-conformance::memory, factum-sqlite::conformance), one body and no literal to tabulate. A table over stores would need one crate to depend on both stores, would run the same body per store (no CPU saved), and would hide which store broke; every scenario runs on every store (CLAUDE.md). Its other_test is the same scenario on the other store."
@@ -53,12 +47,6 @@
       "test": "factum-sqlite::conformance::writers_in_parallel_keep_versions_unique",
       "hash": "b682428b01c50528",
       "reason": "Its same-shape group is not two tests that differ by literals: it is scenarios::writers_in_parallel_keep_versions_unique instantiated by suite! once per store (factum-conformance::memory, factum-sqlite::conformance), one body and no literal to tabulate. A table over stores would need one crate to depend on both stores, would run the same body per store (no CPU saved), and would hide which store broke; every scenario runs on every store (CLAUDE.md). Its other_test, a_writer_that_read_an_old_version_decides_again, is another guarantee with its own home in scenarios.rs (lib.rs: one scenario per guarantee); they share the world setup, not their assertions."
-    },
-    {
-      "suite": "rust",
-      "test": "factum-conformance::memory::a_call_whose_lease_runs_out_on_every_attempt_ends_unknown",
-      "hash": "f4274ac39d952f57",
-      "reason": "Its same-shape group is not two tests that differ by literals: it is scenarios::a_call_whose_lease_runs_out_on_every_attempt_ends_unknown instantiated by suite! once per store (factum-conformance::memory, factum-sqlite::conformance), one body and no literal to tabulate. A table over stores would need one crate to depend on both stores, would run the same body per store (no CPU saved), and would hide which store broke; every scenario runs on every store (CLAUDE.md). Its other_test, a_call_whose_lease_was_taken_over_is_not_made, is another guarantee with its own home in scenarios.rs (lib.rs: one scenario per guarantee); they share the world setup, not their assertions."
     },
     {
       "suite": "rust",
@@ -487,8 +475,8 @@
   ],
   "measured": {
     "rust": {
-      "uncovered_lines": 120,
-      "test_seconds": 5.321
+      "uncovered_lines": 114,
+      "test_seconds": 4.82
     }
   }
 }
