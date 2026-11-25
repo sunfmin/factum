@@ -731,6 +731,8 @@ pub struct OrderList {
     pub strays_on: Option<i64>,
     /// Declares one more column, changing its tables.
     pub with_customer: bool,
+    /// Also declares a table `paid`, an empty row at each paid order's key.
+    pub with_paid: bool,
 }
 
 impl Default for OrderList {
@@ -741,6 +743,7 @@ impl Default for OrderList {
             on_failure: OnFailure::Skip,
             strays_on: None,
             with_customer: false,
+            with_paid: false,
         }
     }
 }
@@ -757,7 +760,11 @@ impl Projection for OrderList {
         if self.with_customer {
             columns.push("customer");
         }
-        vec![Table::new("orders", &columns).index(&["status", "total"])]
+        let mut tables = vec![Table::new("orders", &columns).index(&["status", "total"])];
+        if self.with_paid {
+            tables.push(Table::new("paid", &[]));
+        }
+        tables
     }
     fn on_failure(&self) -> OnFailure {
         self.on_failure
@@ -790,6 +797,14 @@ impl Projection for OrderList {
                     row: json!({ "status": "placed", "total": e.data["total"], "currency": e.data["currency"] }),
                 }]
             }
+            "OrderPaid" if self.with_paid => vec![
+                status("paid"),
+                RowOp::Put {
+                    table: "paid".into(),
+                    key,
+                    row: json!({}),
+                },
+            ],
             "OrderPaid" => vec![status("paid")],
             "OrderCancelled" => vec![status("cancelled")],
             "OrderClosed" => vec![status("closed")],

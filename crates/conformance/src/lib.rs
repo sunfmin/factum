@@ -210,6 +210,7 @@ macro_rules! suite {
             snapshots_change_no_answer,
             queries_filter_and_order_by_declared_columns,
             a_change_to_a_projections_tables_rebuilds_it,
+            a_projections_tables_keep_their_rows_apart,
             a_projection_that_writes_an_undeclared_table_fails_the_event,
             every_store_refuses_rows_of_an_undeclared_table,
             a_dead_letter_retried_with_fixed_code_is_projected,
