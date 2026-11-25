@@ -3,7 +3,10 @@
 - `SPEC.md` is the one home of what factum is: its concepts, crates,
   budgets, store contract and what it leaves out. A change that adds a
   concept, a crate or a store guarantee changes `SPEC.md` in the same
-  commit, and a new concept needs the owner's approval first.
+  commit, and a new concept needs the owner's approval first. `SPEC.md`
+  also holds the glossary and the decisions, so this repo has no
+  `GLOSSARY.md` or `docs/adr/` and does not create them; output that
+  contradicts a `SPEC.md` decision says so, naming the section.
 - Tests live at the outermost layer only: a scenario in
   `crates/conformance/src/scenarios.rs`, driven through the engine's public
   API and registered in `suite!` (`crates/conformance/src/lib.rs`). Do not
@@ -17,13 +20,3 @@
   byte; changing one breaks the keys already in logs.
 - Each change follows `slimfit next`'s loop and the rule for its mutants
   in `slimfit help factorium` (run `slimfit help` for the rest).
-
-## Agent skills
-
-### Issue tracker
-
-Issues live in factorium's local tracker (`factorium issue … factum`). See `docs/agents/issue-tracker.md`.
-
-### Domain docs
-
-single-context, with `SPEC.md` as the glossary and the record of decisions. See `docs/agents/domain.md`.
