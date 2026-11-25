@@ -1,0 +1,23 @@
+{
+  "CLAUDE.md": {
+    "pointers": [
+      "GLOSSARY.md"
+    ]
+  },
+  "SPEC.md": {
+    "local_refs": 3,
+    "rehome": 20967
+  },
+  "crates/sqlite/src/schema.rs": {
+    "local_refs": 10
+  },
+  "crates/sqlite/tests/conformance.rs": {
+    "local_refs": 5
+  },
+  "factorium.toml": {
+    "local_refs": 1
+  },
+  "models/ExactlyOnce.tla": {
+    "local_refs": 1
+  }
+}

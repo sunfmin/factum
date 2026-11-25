@@ -5,16 +5,18 @@ fast = "./gate.sh"
 fast_limit = 900
 slow = "./gate.sh"
 slow_limit = 900
+regenerated = [".docfit/baseline.json"]
 
 # slimfit's tasks and a sample of 5 landed mutants nobody picked, then
-# truefit's tasks (its ADR 0001), filed as issues while the host is idle
-# (factorium SPEC §1.16, `slimfit help sample`). Versions go before the first
-# answer: factorium reads answers only up to the first line that is not JSON,
-# and truefit's names itself in `by`, so it needs no `truefit --version`.
+# truefit's tasks (its ADR 0001), then docfit's document debt, filed as
+# issues while the host is idle (factorium SPEC §1.16, `slimfit help sample`).
+# Versions go before the first answer: factorium reads answers only up to the
+# first line that is not JSON, and truefit's names itself in `by`, so it needs
+# no `truefit --version`.
 # No steps: no check here is too slow for the gates. Measured 2026-11-20 at
 # background priority: `next --all --fresh` 102s, `next --all --sample 5`
 # 428s at load 16-19 (factum#17).
 [idle]
-tasks = "slimfit --version && slimfit next --all --sample 5 && truefit next --all"
+tasks = "slimfit --version && docfit --version && slimfit next --all --sample 5 && truefit next --all && docfit next --all"
 every = 86400
 limit = 1800
