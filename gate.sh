@@ -18,6 +18,9 @@ budget store 3000
 budget engine 5000
 budget sqlite 3000
 
+# Each Markdown file in its one home, within its budget (docfit.toml,
+# measured against .docfit/baseline.json); no file cites the local tracker anew.
+docfit check
 cargo fmt --all --check
 cargo clippy --workspace --all-targets --quiet -- -D warnings
 # Every scenario on every store, measured against .slimfit/baseline.json.
