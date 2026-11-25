@@ -449,6 +449,15 @@
       "test": "factum-sqlite::conformance::starting_a_process_again",
       "hash": "9437bc67c73b8e59",
       "reason": "Checks that starting a process again with the same key and other input is refused key_reused, and after it ends is refused ended, with the call made once. a_process_runs_to_completion checks only completion, status paid and one charge under the step key: none of its assertions checks a second start. Folding the restart assertions into it would put two guarantees in one scenario, against lib.rs one home per guarantee, and hide which one failed, for under 10ms of world setup."
+    },
+    {
+      "suite": "rust",
+      "test": "factum-sqlite::conformance::a_writer_that_loses_every_race_gives_up",
+      "kind": "slow-test",
+      "hash": "7927bd528ae4858c",
+      "seconds": 0.344,
+      "suite_seconds": 5.218,
+      "reason": "Its time is the bound it checks: SPEC §7 fixes that a writer gives up after losing 1000 races, and the scenario makes each of the three writers with its own Races loop (a command, a process's advance, a step's answer) lose all 1000, each loss a real re-read of the stream from the store and a re-decide. Fewer losses cannot show the bound is 1000, and dropping a writer leaves its loop unchecked. Measured (debug): 0.18s on sqlite vs 0.05s on memory; sample shows the cost is the engine re-folding the stream (serde decode) plus a sqlite read per loss; prepare_cached for the store's statements changed nothing (0.20s before and after)."
     }
   ],
   "kept_files": [
