@@ -495,31 +495,6 @@ pub async fn a_scheduled_command_runs_once_when_due<B: Backend>(b: &B) {
     assert_eq!(kinds(&again.events), ["OrderCancelled"]);
 }
 
-pub async fn a_refused_scheduled_command_is_recorded_not_retried<B: Backend>(b: &B) {
-    let w = World::new(b);
-    let e = w.engine("a");
-    let o = place(&e, 5).await;
-    pay(&e, o).await;
-    w.advance(EXPIRES_MS + 1);
-    e.settle().await.unwrap();
-    w.advance(EXPIRES_MS);
-    e.settle().await.unwrap();
-    assert_eq!(status(&e, o).await, "paid");
-    let scheduled = e
-        .history(&order(o))
-        .await
-        .unwrap()
-        .into_iter()
-        .find(|ev| ev.kind == "CommandScheduled")
-        .unwrap();
-    let ran = e
-        .history(&StreamId::new("schedule", scheduled.id))
-        .await
-        .unwrap();
-    assert_eq!(kinds(&ran), ["ScheduleRan"]);
-    assert_eq!(ran[0].data["rejection"]["code"], "not_placed");
-}
-
 pub async fn a_recurring_command_runs_once_per_period<B: Backend>(b: &B) {
     let w = World::new(b);
     let (a, bb) = (w.engine("a"), w.engine("b"));
@@ -679,9 +654,14 @@ pub async fn a_step_whose_runner_dies_at_its_outcome_runs_once<B: Backend>(b: &B
 
 pub async fn a_schedule_whose_runner_dies_at_its_outcome_runs_once<B: Backend>(b: &B) {
     // Each order's schedule: `order.expire` of a placed order (cancels),
-    // of a paid one (refused), and `order.pay_when_placed` of an order
-    // never placed (writes nothing).
-    for (case, ok, cancelled) in [("placed", true, 1), ("paid", false, 0), ("later", true, 0)] {
+    // of a paid one (refused, its rejection recorded), and
+    // `order.pay_when_placed` of an order never placed (writes nothing).
+    let cases = [
+        ("placed", true, 1, None),
+        ("paid", false, 0, Some("not_placed")),
+        ("later", true, 0, None),
+    ];
+    for (case, ok, cancelled, rejection) in cases {
         let w = World::new(b);
         let (a, flaky) = w.flaky("a");
         let o = if case == "later" {
@@ -709,14 +689,24 @@ pub async fn a_schedule_whose_runner_dies_at_its_outcome_runs_once<B: Backend>(b
         w.advance(Options::default().schedule_lease_ms);
         bb.settle().await.unwrap();
         a.settle().await.unwrap();
+        w.advance(EXPIRES_MS);
+        bb.settle().await.unwrap();
+        a.settle().await.unwrap();
         let history = bb.history(&order(o)).await.unwrap();
         let scheduled = history.iter().find(|ev| ev.kind == "CommandScheduled");
         let ran = bb
             .history(&StreamId::new("schedule", scheduled.unwrap().id))
             .await
             .unwrap();
-        assert_eq!(kinds(&ran), ["ScheduleRan"], "{case}");
+        assert_eq!(
+            kinds(&ran),
+            ["ScheduleRan"],
+            "{case}: run once, not retried"
+        );
         assert_eq!(applied(&ran[0].data), ok, "{case}: {}", ran[0].data);
+        if let Some(code) = rejection {
+            assert_eq!(ran[0].data["rejection"]["code"], code, "{case}");
+        }
         assert_eq!(count(&bb, o, "OrderCancelled").await, cancelled, "{case}");
         assert_eq!(
             count(&bb, o, "OrderPaid").await,
