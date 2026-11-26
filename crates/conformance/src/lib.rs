@@ -214,6 +214,7 @@ macro_rules! suite {
             a_projections_tables_keep_their_rows_apart,
             a_projection_that_writes_an_undeclared_table_fails_the_event,
             every_store_refuses_rows_of_an_undeclared_table,
+            every_store_says_what_it_refused,
             a_dead_letter_retried_with_fixed_code_is_projected,
             a_stopped_projection_goes_on_once_its_dead_letter_is_retried,
             a_dead_letter_another_version_left_is_not_retried,
