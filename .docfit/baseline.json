@@ -1,13 +1,4 @@
 {
-  "CLAUDE.md": {
-    "pointers": [
-      "GLOSSARY.md"
-    ]
-  },
-  "SPEC.md": {
-    "local_refs": 3,
-    "rehome": 20967
-  },
   "crates/sqlite/src/schema.rs": {
     "local_refs": 10
   },

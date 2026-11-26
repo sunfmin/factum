@@ -3,8 +3,8 @@
 set -eu
 cd "$(dirname "$0")"
 
-# Each crate's source stays within its budget (SPEC.md, "Crates").
-# Raising one is a decision recorded in SPEC.md, not a side effect.
+# Each crate's source stays within its budget (ADR 0016).
+# Raising one is a decision recorded there, not a side effect.
 budget() {
   lines=$(find "crates/$1/src" -name '*.rs' -exec cat {} + | wc -l | tr -d ' ')
   printf '%-12s %5s / %5s lines\n' "$1" "$lines" "$2"

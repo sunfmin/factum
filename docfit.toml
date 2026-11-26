@@ -5,3 +5,5 @@ local_issue_refs = ["chessmirror", "docfit", "factorium", "factum", "horizon-lab
 [documents]
 "CLAUDE.md" = "agent"
 "README.md" = "readme"
+"GLOSSARY.md" = "glossary"
+"docs/adr/*.md" = "adr"
