@@ -171,13 +171,6 @@ impl Progress {
     pub fn outcome(&self, key: &str) -> Option<&Outcome> {
         self.steps.get(key)
     }
-    /// The step's value, if it succeeded.
-    pub fn ok(&self, key: &str) -> Option<&Value> {
-        match self.steps.get(key) {
-            Some(Outcome::Ok(v)) => Some(v),
-            _ => None,
-        }
-    }
 }
 
 /// The events of a process stream.

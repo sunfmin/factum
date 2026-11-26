@@ -2,28 +2,28 @@
   "date": "2026-11-25",
   "reached": {
     "charged_once": {
-      "seed": "1808656784",
+      "seed": "1730815893",
       "seeds": 100
     },
     "failed_never_done": {
-      "seed": "2056938448",
-      "seeds": 6
+      "seed": "433746262",
+      "seeds": 3
     },
     "nothing_lost": {
-      "seed": "1808656784",
+      "seed": "1730815893",
       "seeds": 100
     },
     "paid_once": {
-      "seed": "1808656784",
+      "seed": "1730815893",
       "seeds": 100
     },
     "printed_at_most_once": {
-      "seed": "1808656784",
-      "seeds": 98
+      "seed": "1730815893",
+      "seeds": 99
     },
     "unknown_never_done": {
-      "seed": "1808656784",
-      "seeds": 100
+      "seed": "1730815893",
+      "seeds": 99
     }
   },
   "seeds": 100
