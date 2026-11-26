@@ -2282,6 +2282,63 @@ pub async fn every_store_refuses_rows_of_an_undeclared_table<B: Backend>(b: &B) 
     );
 }
 
+/// Each refusal's message names what was refused, for whoever calls the
+/// store and prints its error.
+pub async fn every_store_says_what_it_refused<B: Backend>(b: &B) {
+    let w = World::new(b);
+    let e = w.engine("a");
+    let placed = sub("order.place", json!({ "order": id(), "total": 5 }));
+    let key = placed.key;
+    e.submit(placed).await.unwrap();
+    e.settle().await.unwrap();
+    fn said<T: std::fmt::Debug>(r: factum_store::Result<T>) -> String {
+        r.expect_err("refused").to_string()
+    }
+    let again = Unit {
+        key: Some(key),
+        ..Unit::default()
+    };
+    assert_eq!(
+        said(e.store().commit(again).await),
+        format!("key {key} already answered")
+    );
+    let guarded = Unit {
+        guards: vec![(WorkKind::Action, id(), id())],
+        ..Unit::default()
+    };
+    assert_eq!(said(e.store().commit(guarded).await), "lease lost");
+    let at = e.store().checkpoint("orders").await.unwrap().unwrap();
+    let batch = |table: &str, resolved: Vec<Uuid>| Batch {
+        projection: "orders".into(),
+        version: at.version,
+        from: at.position,
+        to: at.position,
+        ops: vec![factum::RowOp::Delete {
+            table: table.into(),
+            key: "k".into(),
+        }],
+        dead: Vec::new(),
+        resolved,
+        stop: false,
+    };
+    assert_eq!(
+        said(
+            e.store()
+                .apply_projection(batch("orders", vec![id()]))
+                .await
+        ),
+        "orders moved since the batch began"
+    );
+    assert_eq!(
+        said(
+            e.store()
+                .apply_projection(batch("strays", Vec::new()))
+                .await
+        ),
+        "orders has no table strays"
+    );
+}
+
 // ---- dead letters retried ----
 
 pub async fn a_dead_letter_retried_with_fixed_code_is_projected<B: Backend>(b: &B) {
