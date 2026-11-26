@@ -15,7 +15,7 @@ spec = "models/ExactlyOnce.tla"
 config = "models/ExactlyOnce.cfg"
 limit = 120
 
-commit = "63f4e3cd7881f1c6828bdb3c6d1793d1ceeeacc3"
+commit = "a222027f82681f0ce172feb7bed69c6dcf464337"
 covers = [
   { action = "Place", file = "crates/conformance/src/sim.rs", function = "Sim::place" },
   { action = "ClaimAdvance", file = "crates/engine/src/work.rs", function = "Engine::advance_due" },
