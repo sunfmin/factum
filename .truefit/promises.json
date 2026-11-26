@@ -64,6 +64,12 @@
     "sentence": "bizkernel's branches, which every one of its store signatures carries today, are rebuilt on top of factum or dropped.",
     "source": "SPEC.md:191"
   },
+  "72c6b63f990b": {
+    "kind": "fixed-often",
+    "mark": "not",
+    "summary": "crates/conformance/src/scenarios.rs was changed by 3 fixes in 180 days, and no registered promise's check covers it",
+    "why": "scenarios.rs is the scenarios themselves, the test checks of promises already registered: factum#55 sped up a_call_whose_lease_runs_out_on_every_attempt_ends_unknown (taken-over-after-last-attempt-ends-unknown), factum#8 added a_writer_that_loses_every_race_gives_up (a-writer-gives-up-after-1000-losses), f499aec added a_result_whose_lease_ran_out_meanwhile_is_refused (renew-only-a-live-lease), a_wake_while_a_runner_holds_the_process_is_not_lost (work-rows-implied-by-events) and tightened snapshots_change_no_answer (snapshot-read-only-by-its-code); a test check's code truefit cannot see"
+  },
   "738075c38c41": {
     "mark": "promise",
     "sentence": "State is folded from the stream by a pure `evolve`. Older event shapes are **upcast** on read, so decide, evolve and projections see only the current shape.",
