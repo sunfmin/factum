@@ -1,0 +1,49 @@
+{
+  "tip": "a222027f82681f0ce172feb7bed69c6dcf464337",
+  "from": "78486b9725165a526803bf438575b80b3caba49d",
+  "pool": 27,
+  "drawn": {
+    "rust": [
+      {
+        "name": "crates/core/src/process.rs:74:9: replace Next::call_at_most_once -> Next with Default::default()",
+        "outcome": "unviable"
+      },
+      {
+        "name": "crates/core/src/model.rs:452:9: replace <impl DynCommand for Typed<C>>::decide -> Result<Result<Vec<NewEvent>, Rejection>, String> with Ok(Ok(vec![Default::default()]))",
+        "outcome": "unviable"
+      },
+      {
+        "name": "crates/core/src/process.rs:81:9: replace Next::queue -> Next with Default::default()",
+        "outcome": "unviable"
+      },
+      {
+        "name": "crates/sqlite/src/tables.rs:15:5: replace checkpoint -> Result<Option<Checkpoint>> with Ok(Some(Default::default()))",
+        "outcome": "unviable"
+      },
+      {
+        "name": "crates/core/src/process.rs:93:9: replace Next::queue_ordered -> Next with Default::default()",
+        "outcome": "unviable"
+      },
+      {
+        "name": "crates/core/src/process.rs:67:9: replace Next::call -> Next with Default::default()",
+        "outcome": "unviable"
+      },
+      {
+        "name": "crates/engine/src/engine.rs:358:9: replace Engine<S>::plan -> Result<Vec<NewEvent>, Error> with Ok(vec![])",
+        "outcome": "killed"
+      },
+      {
+        "name": "crates/core/src/process.rs:110:9: replace Next::complete -> Next with Default::default()",
+        "outcome": "unviable"
+      },
+      {
+        "name": "crates/core/src/model.rs:509:5: replace encode_event -> Result<NewEvent, String> with Ok(Default::default())",
+        "outcome": "unviable"
+      },
+      {
+        "name": "crates/sqlite/src/tables.rs:106:5: replace dead_letters -> Result<Vec<DeadLetter>> with Ok(vec![Default::default()])",
+        "outcome": "unviable"
+      }
+    ]
+  }
+}
