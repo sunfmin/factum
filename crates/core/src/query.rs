@@ -97,12 +97,11 @@ impl Query {
             ..Query::default()
         }
     }
-    pub fn filter(mut self, column: &str, op: Op, value: impl Serialize) -> Query {
-        let value = serde_json::to_value(value).unwrap_or(Value::Null);
+    pub fn filter(mut self, column: &str, op: Op, value: impl Into<Value>) -> Query {
         self.filters.push(Filter {
             column: column.into(),
             op,
-            value,
+            value: value.into(),
         });
         self
     }

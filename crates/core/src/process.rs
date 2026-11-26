@@ -58,43 +58,31 @@ pub enum Next {
 
 impl Next {
     pub fn run(key: &str, command: &str, params: impl Serialize) -> Next {
-        Next::step(
-            key,
-            Step::Run {
-                command: command.into(),
-                params: to_value(params),
-            },
-        )
+        Next::step_with(key, params, |params| Step::Run {
+            command: command.into(),
+            params,
+        })
     }
     pub fn call(key: &str, action: &str, params: impl Serialize) -> Next {
-        Next::step(
-            key,
-            Step::Call {
-                action: action.into(),
-                params: to_value(params),
-                at_most_once: false,
-            },
-        )
+        Next::step_with(key, params, |params| Step::Call {
+            action: action.into(),
+            params,
+            at_most_once: false,
+        })
     }
     pub fn call_at_most_once(key: &str, action: &str, params: impl Serialize) -> Next {
-        Next::step(
-            key,
-            Step::Call {
-                action: action.into(),
-                params: to_value(params),
-                at_most_once: true,
-            },
-        )
+        Next::step_with(key, params, |params| Step::Call {
+            action: action.into(),
+            params,
+            at_most_once: true,
+        })
     }
     pub fn queue(key: &str, task_type: &str, input: impl Serialize) -> Next {
-        Next::step(
-            key,
-            Step::Queue {
-                task_type: task_type.into(),
-                input: to_value(input),
-                ordering_key: None,
-            },
-        )
+        Next::step_with(key, input, |input| Step::Queue {
+            task_type: task_type.into(),
+            input,
+            ordering_key: None,
+        })
     }
     pub fn queue_ordered(
         key: &str,
@@ -102,14 +90,11 @@ impl Next {
         input: impl Serialize,
         ordering_key: &str,
     ) -> Next {
-        Next::step(
-            key,
-            Step::Queue {
-                task_type: task_type.into(),
-                input: to_value(input),
-                ordering_key: Some(ordering_key.into()),
-            },
-        )
+        Next::step_with(key, input, |input| Step::Queue {
+            task_type: task_type.into(),
+            input,
+            ordering_key: Some(ordering_key.into()),
+        })
     }
     pub fn await_event(key: &str, stream: StreamId, event: &str, within_ms: i64) -> Next {
         Next::step(
@@ -122,7 +107,10 @@ impl Next {
         )
     }
     pub fn complete(value: impl Serialize) -> Next {
-        Next::Finish(Finished::Completed(to_value(value)))
+        match serde_json::to_value(value) {
+            Ok(value) => Next::Finish(Finished::Completed(value)),
+            Err(e) => Next::stuck(format!("the result does not serialize: {e}")),
+        }
     }
     pub fn fail(reason: impl Into<String>) -> Next {
         Next::Finish(Finished::Failed(reason.into()))
@@ -136,10 +124,14 @@ impl Next {
             step,
         }
     }
-}
-
-fn to_value(v: impl Serialize) -> Value {
-    serde_json::to_value(v).unwrap_or(Value::Null)
+    /// The step `make` builds from `v` as JSON, or the process stuck with
+    /// why `v` did not serialize: a step is never given `null` in its place.
+    fn step_with(key: &str, v: impl Serialize, make: impl FnOnce(Value) -> Step) -> Next {
+        match serde_json::to_value(v) {
+            Ok(v) => Next::step(key, make(v)),
+            Err(e) => Next::stuck(format!("step {key} does not serialize: {e}")),
+        }
+    }
 }
 
 /// What became of one step.
@@ -198,10 +190,8 @@ impl ProcessEvent {
     }
 
     pub fn data(&self) -> Value {
-        serde_json::to_value(self)
-            .ok()
-            .and_then(|v| v.get("data").cloned())
-            .unwrap_or(Value::Null)
+        let value = serde_json::to_value(self).expect("a ProcessEvent is plain JSON");
+        value["data"].clone()
     }
 
     pub fn decode(kind: &str, data: &Value) -> Result<ProcessEvent, String> {
