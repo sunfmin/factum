@@ -397,7 +397,8 @@ impl Sim {
             order: order.id,
             total,
         };
-        let sub = Submission::new("order.place", placed, self.rng.id(), by.clone());
+        let sub = Submission::new("order.place", placed, self.rng.id(), by.clone())
+            .expect("Place serializes");
         let checkout = Checkout {
             order: order.id,
             total,

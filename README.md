@@ -14,7 +14,7 @@ use factum::{Engine, MemoryStore, Model, Submission, SystemClock, By, Uuid};
 let model = Arc::new(Model::new().command::<PlaceOrder>().process::<Checkout>());
 let engine = Engine::new(Arc::new(MemoryStore::new()), model, Arc::new(SystemClock), "runner-1");
 
-engine.submit(Submission::new("order.place", params, Uuid::now_v7(), By::Principal("person:ann".into()))).await?;
+engine.submit(Submission::new("order.place", params, Uuid::now_v7(), By::Principal("person:ann".into()))?).await?;
 engine.tick().await?; // advance processes, deliver actions, run what is due, catch projections up
 ```
 

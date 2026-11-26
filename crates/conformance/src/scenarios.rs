@@ -5,7 +5,7 @@ use std::sync::atomic::Ordering;
 
 use factum::{
     Engine, Error, Event, Finished, Op, Options, Outcome, Query, Store, StreamId, Submission, Uuid,
-    Value, Version,
+    Value, Version, codes,
 };
 use factum_core::{
     Recurring, Work, WorkChange, WorkKind, recurring_key, recurring_stream, schedule_key,
@@ -323,6 +323,33 @@ pub async fn a_plan_records_nothing<B: Backend>(b: &B) {
     assert_eq!(status(&e, o).await, "");
 }
 
+/// Params that cannot be written as JSON: their `Serialize` fails.
+struct Unwritable;
+
+impl serde::Serialize for Unwritable {
+    fn serialize<S: serde::Serializer>(&self, _: S) -> Result<S::Ok, S::Error> {
+        Err(serde::ser::Error::custom("unwritable params"))
+    }
+}
+
+pub async fn params_that_do_not_serialize_are_refused_with_their_cause<B: Backend>(b: &B) {
+    let w = World::new(b);
+    let e = w.engine("a");
+    let o = id();
+    let planned = e.plan("order.place", Unwritable, ann()).await;
+    let submitted = Submission::new("order.place", Unwritable, id(), ann());
+    for refusal in [planned.map(|_| ()), submitted.map(|_| ())] {
+        match refusal {
+            Err(Error::Rejected(r)) => {
+                assert_eq!(r.code, codes::INVALID_PARAMS);
+                assert!(r.message.contains("unwritable params"), "{}", r.message);
+            }
+            other => panic!("expected invalid_params, got {other:?}"),
+        }
+    }
+    assert!(e.history(&order(o)).await.unwrap().is_empty());
+}
+
 pub async fn a_writer_that_read_an_old_version_decides_again<B: Backend>(b: &B) {
     let w = World::new(b);
     let (a, flaky) = w.flaky("a");
@@ -489,7 +516,7 @@ pub async fn a_scheduled_command_runs_once_when_due<B: Backend>(b: &B) {
     let scheduled = a.history(&order(o)).await.unwrap();
     let scheduled = scheduled.iter().find(|ev| ev.kind == "CommandScheduled");
     let key = schedule_key(scheduled.unwrap().id);
-    let again = Submission::new("order.expire", json!({ "order": o }), key, ann());
+    let again = Submission::new("order.expire", json!({ "order": o }), key, ann()).unwrap();
     let again = a.submit(again).await.unwrap();
     assert!(again.replayed);
     assert_eq!(kinds(&again.events), ["OrderCancelled"]);

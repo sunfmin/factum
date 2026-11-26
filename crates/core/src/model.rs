@@ -49,16 +49,24 @@ pub trait Aggregate: Send + Sync + 'static {
 pub struct Decision<E> {
     pub events: Vec<E>,
     pub scheduled: Vec<Scheduled>,
+    /// Why a scheduled command's params did not serialize: the decide
+    /// faults, as an event that does not encode does.
+    unwritable: Option<String>,
 }
 
 impl<E> Decision<E> {
     pub fn schedule(mut self, at: Instant, command: &str, params: impl Serialize) -> Self {
-        let params = serde_json::to_value(params).unwrap_or(Value::Null);
-        self.scheduled.push(Scheduled {
-            at,
-            command: command.to_string(),
-            params,
-        });
+        match serde_json::to_value(params) {
+            Ok(params) => self.scheduled.push(Scheduled {
+                at,
+                command: command.to_string(),
+                params,
+            }),
+            Err(e) => {
+                let why = format!("schedule {command}: {e}");
+                self.unwritable.get_or_insert(why);
+            }
+        }
         self
     }
 }
@@ -68,6 +76,7 @@ impl<E> From<Vec<E>> for Decision<E> {
         Decision {
             events,
             scheduled: Vec::new(),
+            unwritable: None,
         }
     }
 }
@@ -450,6 +459,9 @@ impl<C: Command> DynCommand for Typed<C> {
             Ok(d) => d,
             Err(r) => return Ok(Err(r)),
         };
+        if let Some(why) = decision.unwritable {
+            return Err(format!("{}: {why}", C::NAME));
+        }
         let mut events = Vec::with_capacity(decision.events.len() + decision.scheduled.len());
         for event in decision.events {
             events.push(encode_event(&event).map_err(|e| format!("{}: {e}", C::NAME))?);
@@ -501,6 +513,7 @@ fn encode_event<E: Serialize>(event: &E) -> Result<NewEvent, String> {
         .ok_or("an event must serialize as {\"type\", \"data\"}")?;
     Ok(NewEvent {
         kind: kind.to_string(),
+        // A variant without data has no "data": null is that absence.
         data: value.get("data").cloned().unwrap_or(Value::Null),
     })
 }

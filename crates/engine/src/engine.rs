@@ -96,13 +96,21 @@ pub struct Submission {
 }
 
 impl Submission {
-    pub fn new(command: &str, params: impl Serialize, key: Uuid, by: By) -> Submission {
-        Submission {
+    /// Refused `INVALID_PARAMS` when `params` do not serialize.
+    pub fn new(
+        command: &str,
+        params: impl Serialize,
+        key: Uuid,
+        by: By,
+    ) -> Result<Submission, Error> {
+        let params = serde_json::to_value(params)
+            .map_err(|e| rejected(codes::INVALID_PARAMS, e.to_string()))?;
+        Ok(Submission {
             command: command.to_string(),
-            params: serde_json::to_value(params).unwrap_or(Value::Null),
+            params,
             key,
             by,
-        }
+        })
     }
 }
 
@@ -347,14 +355,7 @@ impl<S: Store> Engine<S> {
         params: impl Serialize,
         by: By,
     ) -> Result<Vec<NewEvent>, Error> {
-        let params = serde_json::to_value(params)
-            .map_err(|e| rejected(codes::INVALID_PARAMS, e.to_string()))?;
-        let sub = Submission {
-            command: command.to_string(),
-            params,
-            key: Uuid::nil(),
-            by,
-        };
+        let sub = Submission::new(command, params, Uuid::nil(), by)?;
         let (_, _, (_, events)) = self.decide(&sub, self.clock.now()).await?;
         Ok(events)
     }

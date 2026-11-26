@@ -43,7 +43,8 @@ fn item(row: &Work) -> String {
 
 /// `e` as a process is given it.
 pub(crate) fn event_json(e: &Event) -> Value {
-    serde_json::to_value(Recorded::from(e)).unwrap_or(Value::Null)
+    serde_json::to_value(Recorded::from(e))
+        .expect("a Recorded is plain JSON: strings, numbers and Values")
 }
 
 impl<S: Store> Engine<S> {
