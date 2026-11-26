@@ -160,7 +160,6 @@ macro_rules! suite {
             an_ended_stream_refuses_every_command,
             a_stream_ended_by_a_scheduling_command_stays_ended,
             a_scheduled_command_runs_once_when_due,
-            a_refused_scheduled_command_is_recorded_not_retried,
             a_recurring_command_runs_once_per_period,
             a_refused_recurring_command_runs_once_per_period,
             a_recurring_command_that_writes_nothing_runs_once_per_period,

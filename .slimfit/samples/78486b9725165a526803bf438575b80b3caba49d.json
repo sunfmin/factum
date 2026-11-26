@@ -1,0 +1,29 @@
+{
+  "tip": "78486b9725165a526803bf438575b80b3caba49d",
+  "from": "63f4e3cd7881f1c6828bdb3c6d1793d1ceeeacc3",
+  "pool": 61,
+  "drawn": {
+    "rust": [
+      {
+        "name": "crates/sqlite/src/lib.rs:163:9: replace <impl Store for SqliteStore>::commit -> Result<Vec<Event>> with Ok(vec![])",
+        "outcome": "killed"
+      },
+      {
+        "name": "crates/sqlite/src/tables.rs:18:5: replace table_name -> String with \"xyzzy\".into()",
+        "outcome": "survived"
+      },
+      {
+        "name": "crates/sqlite/src/tables.rs:63:5: replace create -> Result<()> with Ok(())",
+        "outcome": "killed"
+      },
+      {
+        "name": "crates/sqlite/src/tables.rs:18:5: replace table_name -> String with String::new()",
+        "outcome": "killed"
+      },
+      {
+        "name": "crates/sqlite/src/work.rs:88:5: replace works -> Result<Vec<Stored>> with Ok(vec![])",
+        "outcome": "killed"
+      }
+    ]
+  }
+}
