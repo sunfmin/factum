@@ -483,14 +483,6 @@
     },
     {
       "suite": "rust",
-      "file": "crates/sqlite/src/lib.rs",
-      "prod_lines": 813,
-      "commits_90d": 9,
-      "commits_total": 9,
-      "reason": "Already deep: its interface is open/path plus the Store trait (SPEC §3), a real seam with two adapters (memory, sqlite). The rules every store shares (claim_row, wake_row, release_row, check_unit, check_batch) already moved to factum-store in factum#14/#15; what remains is SQL only (schema steps, row codecs, generated projection tables, claim query), the knowledge this adapter exists to hide. Tests cross only the engine API, plus the SPEC-sanctioned file-format test. Splitting the file would move lines, not add depth."
-    },
-    {
-      "suite": "rust",
       "file": "crates/engine/src/work.rs",
       "prod_lines": 586,
       "commits_90d": 10,
@@ -504,6 +496,14 @@
       "commits_90d": 7,
       "commits_total": 7,
       "reason": "Deep already: programs write typed traits (Aggregate, Command, Process, Projection) and the engine holds erased Dyn* forms by name through three constructors (aggregate_of, command_of, process_of), which hide serde tag/data encoding, upcasting by version, state decoding and the fault-vs-rejection split. Retry is one home (factum#23): the engine asks only on_claim and after_failure, never re-derives Unknown/Failed or backoff. All 90-day churn was that retry rule settling (#23, #30), not a shallow seam. Moving the policies beside Work in work.rs would move lines, not add depth; the rest (Recurring::period_start, RowOp, OnFailure) is small declaration data."
+    },
+    {
+      "suite": "rust",
+      "file": "crates/sqlite/src/lib.rs",
+      "prod_lines": 257,
+      "commits_90d": 23,
+      "commits_total": 23,
+      "reason": "Deep enough after its splits: the 23 commits in 90 days are mostly the moves that already deepened it (schema.rs factum#48, tables.rs and work.rs factum#57, checkpoints into tables.rs factum#68), taking it from 813 to 257 prod lines. What remains is open/path plus the Store trait (SPEC §3), a seam with two adapters; the per-call methods are the trait's adapter bodies (marshal args onto the connection thread, one immediate transaction per write), not pass-throughs, and the events log and snapshots SQL left here are this file's own concern. Rules every store shares already live in factum-store; tests cross only the engine API. Splitting the events log into its own module would move lines, not add depth."
     }
   ],
   "measured": {
