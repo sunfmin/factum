@@ -1,6 +1,6 @@
 ---------------------------- MODULE ExactlyOnce ----------------------------
-(* What factum promises for the work that outlives a command (SPEC §1,     *)
-(* rows 5-7, and the work rows), as the simulation's shop runs it          *)
+(* What factum promises for the work that outlives a command (ADR 0004,    *)
+(* ADR 0005), as the simulation's shop runs it                             *)
 (* (crates/conformance/src/sim.rs): each order starts a checkout, which    *)
 (* charges it at least once through the outbox (asking the payment system *)
 (* when the charge's outcome is unknown) and pays or cancels it, and a     *)

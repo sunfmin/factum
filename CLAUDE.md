@@ -1,12 +1,11 @@
 # Working on factum
 
-- `SPEC.md` is the one home of what factum is: its concepts, crates,
-  budgets, store contract and what it leaves out. A change that adds a
-  concept, a crate or a store guarantee changes `SPEC.md` in the same
-  commit, and a new concept needs the owner's approval first. `SPEC.md`
-  also holds the glossary and the decisions, so this repo has no
-  `GLOSSARY.md` or `docs/adr/` and does not create them; output that
-  contradicts a `SPEC.md` decision says so, naming the section.
+- factum's words are `GLOSSARY.md`'s, and its decisions and promises are
+  `docs/adr/`'s, one decision per ADR. A change that adds a concept, a
+  crate or a store guarantee adds or changes an ADR in the same commit (a
+  new word in the glossary too), and a new concept needs the owner's
+  approval first (ADR 0001). A promise an ADR makes is registered in
+  `truefit.toml`; output that contradicts an ADR says so, naming it.
 - Tests live at the outermost layer only: a scenario in
   `crates/conformance/src/scenarios.rs`, driven through the engine's public
   API and registered in `suite!` (`crates/conformance/src/lib.rs`). Do not

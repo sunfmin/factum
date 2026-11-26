@@ -26,7 +26,8 @@ engine.tick().await?; // advance processes, deliver actions, run what is due, ca
 | `factum-sqlite` | The store on SQLite. |
 | `factum-conformance` | The scenarios every store must pass. |
 
-How it works, what it guarantees and what it leaves out: [SPEC.md](SPEC.md).
+Its words: [GLOSSARY.md](GLOSSARY.md). What it guarantees, what it leaves
+out and why: [docs/adr/](docs/adr/).
 The scenarios in `crates/conformance/src/scenarios.rs` are its executable
 documentation: each states one guarantee and proves it through the public
 API.

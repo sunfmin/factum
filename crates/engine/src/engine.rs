@@ -166,7 +166,7 @@ const SETTLE_TICKS: usize = 1000;
 /// writer from losing forever.
 const MAX_RETRIES: usize = 1000;
 
-/// The one home of deciding again after a lost race (SPEC §7). A writer
+/// The one home of deciding again after a lost race (ADR 0017). A writer
 /// counts its losses here; each one yields once, so the winners finish
 /// before it decides again, until the bound, where it gives up. What counts
 /// as a lost race is the writer's own.

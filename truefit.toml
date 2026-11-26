@@ -52,218 +52,218 @@ covers = [
 [model.trace]
 orders = "r.state.orders"
 
-# What SPEC.md promises, each tied to the cheapest check that breaks when
+# What the ADRs promise, each tied to the cheapest check that breaks when
 # it does (`truefit promise`). The scenarios named in a `test` check's
 # comment are in crates/conformance/src/scenarios.rs.
 [promises]
-sources = ["SPEC.md", "README.md", "docs/adr/*.md"]
+sources = ["README.md", "docs/adr/*.md"]
 
 [[promise]]
 name = "events-never-edited"
 says = "Never edited."
-source = "SPEC.md:20"
+source = "docs/adr/0002-events-are-facts-in-one-append-only-log.md:5"
 kept = "the Store trait has no method that edits or removes an event: commit only appends, at the versions the writer read"
 
 [[promise]]
 name = "ended-stream-refuses"
 says = "a stream whose last domain event ends it refuses every later command (`ended`)"
-source = "SPEC.md:21"
+source = "docs/adr/0002-events-are-facts-in-one-append-only-log.md:9"
 check = ["test"] # an_ended_stream_refuses_every_command, a_stream_ended_by_a_scheduling_command_stays_ended
 
 [[promise]]
 name = "upcast-on-read"
 says = "Older event shapes are **upcast** on read, so decide, evolve and projections see only the current shape."
-source = "SPEC.md:22"
+source = "docs/adr/0002-events-are-facts-in-one-append-only-log.md:11"
 check = ["test"] # old_events_are_read_in_their_current_shape
 
 [[promise]]
 name = "lost-answer-at-most-once-ends-unknown"
 says = "Delivered at least once under the step's key, or **at most once**, in which case a call whose answer was lost ends `Unknown` for `next` to reconcile."
-source = "SPEC.md:25"
+source = "docs/adr/0005-a-call-that-may-have-happened-ends-unknown.md:8"
 check = ["test"] # a_call_whose_answer_was_lost_is_made_again_and_done_once, an_at_most_once_call_whose_answer_was_lost_ends_unknown
-why = "the scenarios line the lost answer up by hand; across orders the simulation and the model keep it as printed_at_most_once and unknown_never_done (SPEC.md:156)"
+why = "the scenarios line the lost answer up by hand; across orders the simulation and the model keep it as printed_at_most_once and unknown_never_done (docs/adr/0015-a-seeded-simulation-and-a-model-keep-the-same-promises.md:17)"
 
 [[promise]]
 name = "taken-over-after-last-attempt-ends-unknown"
 says = "taken over after the last, it ends `Unknown`, as an at-most-once one does, since that attempt may have done the work; it ends `Failed` only when its last attempt answered an error"
-source = "SPEC.md:25"
+source = "docs/adr/0005-a-call-that-may-have-happened-ends-unknown.md:11"
 check = ["test"] # a_call_whose_lease_runs_out_on_every_attempt_ends_unknown, a_call_that_fails_for_now_is_tried_again_then_given_up
-why = "the scenarios run out each lease by hand; across orders the simulation and the model keep it as unknown_never_done and failed_never_done (SPEC.md:156)"
+why = "the scenarios run out each lease by hand; across orders the simulation and the model keep it as unknown_never_done and failed_never_done (docs/adr/0015-a-seeded-simulation-and-a-model-keep-the-same-promises.md:17)"
 
 [[promise]]
 name = "no-call-after-takeover"
 says = "a runner whose lease was taken over (an earlier call of its tick outlived the timeout) does not make it, so no call lands after another holder recorded the step"
-source = "SPEC.md:25"
+source = "docs/adr/0005-a-call-that-may-have-happened-ends-unknown.md:12"
 check = ["test"] # a_call_whose_lease_was_taken_over_is_not_made
-why = "the scenario lines the takeover up by hand; across orders the simulation and the model keep it as charged_once (SPEC.md:156)"
+why = "the scenario lines the takeover up by hand; across orders the simulation and the model keep it as charged_once (docs/adr/0015-a-seeded-simulation-and-a-model-keep-the-same-promises.md:17)"
 
 [[promise]]
 name = "task-heartbeat-within-timeout"
 says = "heartbeat to keep it (never past the type's timeout)"
-source = "SPEC.md:26"
+source = "docs/adr/0005-a-call-that-may-have-happened-ends-unknown.md:16"
 check = ["test"] # a_heartbeat_never_holds_a_task_past_its_timeout, a_task_whose_lease_ran_out_is_taken_over
 why = "the simulation and the model drive no tasks; the scenarios run workers' leases out with Flaky and the clock"
 
 [[promise]]
 name = "task-ends-as-action-does"
 says = "ends as an action does once they are spent (`Unknown` if the last attempt's lease ran out, `Failed` if it answered an error); may be done at most once; may be cancelled; may carry an **ordering key** (one at a time per key, in order, paced)"
-source = "SPEC.md:26"
+source = "docs/adr/0005-a-call-that-may-have-happened-ends-unknown.md:17"
 check = ["test"] # a_failed_attempt_is_tried_again, an_at_most_once_task_whose_lease_ran_out_ends_unknown, a_cancelled_task_ends_its_step_cancelled, tasks_with_one_ordering_key_run_one_at_a_time_paced, a_crash_between_a_tasks_answer_and_its_pace_loses_no_pace
 why = "the simulation and the model drive no tasks; the scenarios line up crashes and takeovers of workers with Flaky"
 
 [[promise]]
 name = "projection-reads-final-in-order"
 says = "It reads only **final** events in commit order; rows and checkpoint move together."
-source = "SPEC.md:28"
+source = "docs/adr/0007-projection-tables-are-declared.md:8"
 check = ["test"] # projection_rows_follow_the_log_and_rebuild_the_same, two_projectors_apply_each_event_once
 
 [[promise]]
 name = "stale-projection-rebuilt-by-the-loop"
 says = "A new version, or any change to its tables, makes it not current, and the engine's loop rebuilds it from the whole log; a read never writes, and reads one that is not current as not yet built (no rows, no dead letters). An event it fails on, or that writes an undeclared table, becomes a **dead letter**: skipped, or (declared `stop`) held there."
-source = "SPEC.md:28"
+source = "docs/adr/0008-a-read-never-rebuilds.md:6"
 check = ["test"] # a_change_to_a_projections_tables_rebuilds_it, a_read_never_serves_rows_another_version_built, a_projection_skips_an_event_it_fails_on, a_projection_that_writes_an_undeclared_table_fails_the_event, a_projection_that_stops_holds_until_rebuilt
 
 [[promise]]
 name = "snapshot-read-only-by-its-code"
 says = "A stream's state at a version, kept by the code that folded it and read only by that code."
-source = "SPEC.md:29"
+source = "docs/adr/0002-events-are-facts-in-one-append-only-log.md:13"
 check = ["test"] # snapshots_change_no_answer
 
 [[promise]]
 name = "work-rows-implied-by-events"
 says = "Every row is implied by an event committed with it (one pure function, `effects`), so the rows never say what the log does not."
-source = "SPEC.md:44"
+source = "docs/adr/0004-every-pending-thing-is-one-kind-of-work-row.md:7"
 check = ["test"] # a_step_run_but_not_recorded_is_replayed_not_repeated, a_wake_while_a_runner_holds_the_process_is_not_lost, work_rows_in_the_stored_shape_still_run
 
 [[promise]]
 name = "a-fault-stops-nothing-else"
 says = "A tick runs every loop over every item even when one faults (its code cannot read an event, a state or a row). An event the engine cannot dispatch — start the processes it starts, answer the waits on it — becomes a **dead letter** of the dispatch checkpoint `factum.dispatch`, read and retried as a projection's are."
-source = "SPEC.md:48"
+source = "docs/adr/0009-a-fault-sets-one-item-aside-not-the-tick.md:5"
 check = ["test"] # an_event_that_cannot_be_dispatched_stops_nothing_else, a_process_that_faults_stops_no_other
 
 [[promise]]
 name = "only-a-store-error-ends-the-tick"
 says = "The tick reports each item it set aside; only a store error ends it."
-source = "SPEC.md:55"
+source = "docs/adr/0009-a-fault-sets-one-item-aside-not-the-tick.md:9"
 check = ["test"] # a_store_error_ends_the_tick_and_a_fault_does_not, a_store_error_reaches_a_worker_as_it_is
 
 [[promise]]
 name = "values-compare-as-sqlite"
 says = "Values compare as SQLite compares them**, in every store: null before numbers before text; numbers by value; booleans as 0 and 1; objects and arrays as their JSON text; a comparison with null never holds."
-source = "SPEC.md:57"
+source = "docs/adr/0007-projection-tables-are-declared.md:14"
 check = ["test"] # queries_filter_and_order_by_declared_columns
 
 [[promise]]
 name = "no-lock-while-the-caller-works"
 says = "Every method is one short transaction; none holds a lock while the caller works."
-source = "SPEC.md:79"
+source = "docs/adr/0010-the-store-contract-for-the-log-and-the-work.md:5"
 check = ["test"] # runners_in_parallel_do_each_thing_once, writers_in_parallel_keep_versions_unique
 why = "a store method that held a lock across the caller's work deadlocks the scenarios' parallel runners on every store; the simulation's in-memory store runs on one thread and has no lock to hold"
 
 [[promise]]
 name = "read-log-in-commit-order"
 says = "`read_stream(stream, after)`; `read_log(after, limit)` — only final events, in commit order: no later commit lands before the last returned."
-source = "SPEC.md:82"
+source = "docs/adr/0010-the-store-contract-for-the-log-and-the-work.md:8"
 check = ["test"] # projection_rows_follow_the_log_and_rebuild_the_same, one_tick_catches_a_projection_up_batch_by_batch, two_projectors_apply_each_event_once
 
 [[promise]]
 name = "claim-takes-due-unleased-rows"
 says = "`claim(kind, names, now, holder, lease, limit)` — due rows no live lease holds, oldest due first; of rows sharing a name and ordering key only the first put, and not before its pace."
-source = "SPEC.md:90"
+source = "docs/adr/0010-the-store-contract-for-the-log-and-the-work.md:19"
 check = ["test"] # two_runners_take_each_step_once, a_runner_that_dies_loses_its_process_to_another, tasks_with_one_ordering_key_run_one_at_a_time_paced
-why = "which rows a claim takes is each store's one query, held to the scenarios on every store; across orders the simulation and the model keep what rests on it as charged_once and paid_once (SPEC.md:156), the model's Claimed being claim_row"
+why = "which rows a claim takes is each store's one query, held to the scenarios on every store; across orders the simulation and the model keep what rests on it as charged_once and paid_once (docs/adr/0015-a-seeded-simulation-and-a-model-keep-the-same-promises.md:17), the model's Claimed being claim_row"
 
 [[promise]]
 name = "renew-only-a-live-lease"
 says = "— only a lease that has not run out; `work(kind, id)`; `work_named(kind, name)`."
-source = "SPEC.md:95"
+source = "docs/adr/0010-the-store-contract-for-the-log-and-the-work.md:24"
 check = ["test"] # a_result_whose_lease_ran_out_meanwhile_is_refused, a_retry_whose_lease_ran_out_meanwhile_changes_nothing
-why = "the scenarios run a lease out by hand on every store; across orders the simulation and the model keep what rests on it as charged_once (SPEC.md:156)"
+why = "the scenarios run a lease out by hand on every store; across orders the simulation and the model keep what rests on it as charged_once (docs/adr/0015-a-seeded-simulation-and-a-model-keep-the-same-promises.md:17)"
 
 [[promise]]
 name = "projection-batch-all-or-none"
 says = "A batch is one move of a projection — rows, new dead letters, retried dead letters removed, checkpoint — all of it or none: `Stale` unless the checkpoint is where the batch began and every dead letter it removes is there, `Undeclared` if a row op names a table the projection was not built with."
-source = "SPEC.md:101"
+source = "docs/adr/0011-the-store-contract-for-projections-and-snapshots.md:6"
 check = ["test"] # two_projectors_apply_each_event_once, every_store_refuses_rows_of_an_undeclared_table, a_dead_letter_retried_with_fixed_code_is_projected
 
 [[promise]]
 name = "undecodable-row-is-an-error"
 says = "A row a store cannot decode is an error, never a guessed value."
-source = "SPEC.md:112"
+source = "docs/adr/0011-the-store-contract-for-projections-and-snapshots.md:18"
 check = ["test"] # a_work_row_that_does_not_decode_is_a_fault
 
 [[promise]]
 name = "a-schema-step-never-changes-an-event"
 says = "A step never changes what an event says."
-source = "SPEC.md:122"
+source = "docs/adr/0012-data-written-earlier-opens-with-a-later-version.md:10"
 check = ["test"] # crates/sqlite/tests/conformance.rs: answers_kept_as_copies_answer_the_same_once_opened, copies_an_older_binary_kept_later_answer_the_same_once_opened
-why = "the store's file format is tested beside the store (SPEC.md:174): a database taken back to schema 3 or 5 is opened and its events, meta and all, are the ones first written"
+why = "the store's file format is tested beside the store (docs/adr/0012-data-written-earlier-opens-with-a-later-version.md:18): a database taken back to schema 3 or 5 is opened and its events, meta and all, are the ones first written"
 
 [[promise]]
 name = "charged_once"
 says = "no order is charged twice"
-source = "SPEC.md:156"
+source = "docs/adr/0015-a-seeded-simulation-and-a-model-keep-the-same-promises.md:17"
 check = ["sim", "model exactly-once"]
 
 [[promise]]
 name = "paid_once"
 says = "no order is charged twice or paid twice"
-source = "SPEC.md:156"
+source = "docs/adr/0015-a-seeded-simulation-and-a-model-keep-the-same-promises.md:17"
 check = ["sim", "model exactly-once"]
 
 [[promise]]
 name = "printed_at_most_once"
 says = "an at-most-once call is made at most once"
-source = "SPEC.md:156"
+source = "docs/adr/0015-a-seeded-simulation-and-a-model-keep-the-same-promises.md:17"
 check = ["sim", "model exactly-once"]
 
 [[promise]]
 name = "unknown_never_done"
 says = "no step is recorded done whose call was not made"
-source = "SPEC.md:156"
+source = "docs/adr/0015-a-seeded-simulation-and-a-model-keep-the-same-promises.md:17"
 check = ["sim", "model exactly-once"]
 
 [[promise]]
 name = "failed_never_done"
 says = "nor failed whose call was made"
-source = "SPEC.md:156"
+source = "docs/adr/0015-a-seeded-simulation-and-a-model-keep-the-same-promises.md:17"
 check = ["sim", "model exactly-once"]
 
 [[promise]]
 name = "nothing_lost"
 says = "every unfinished process keeps a work row"
-source = "SPEC.md:156"
+source = "docs/adr/0015-a-seeded-simulation-and-a-model-keep-the-same-promises.md:17"
 check = ["sim", "model exactly-once"]
 
 [[promise]]
 name = "a-writer-gives-up-after-1000-losses"
 says = "a writer that loses a race yields once before deciding again, up to 1000 times"
-source = "SPEC.md:214"
+source = "docs/adr/0017-async-on-no-particular-runtime.md:5"
 check = ["test"] # a_writer_that_read_an_old_version_decides_again, a_writer_that_loses_every_race_gives_up, writers_in_parallel_keep_versions_unique
 why = "the bound is one loop's count: Flaky lines up a writer losing every race, and parallel writers race for real on every store"
 
 [[promise]]
 name = "queries-take-only-declared-columns"
 says = "Queries take only declared columns, so every store can answer them with an index."
-source = "SPEC.md:221"
+source = "docs/adr/0007-projection-tables-are-declared.md:12"
 check = ["test"] # queries_filter_and_order_by_declared_columns
 
 [[promise]]
 name = "a-read-never-rebuilds"
 says = "**A read never rebuilds.**"
-source = "SPEC.md:225"
+source = "docs/adr/0008-a-read-never-rebuilds.md:8"
 check = ["test"] # a_read_never_serves_rows_another_version_built
 
 [[promise]]
 name = "a-read-answers-other-code-unbuilt"
 says = "every read (`query`, `rows`, `row`, `dead_letters`, a retry) takes a projection as it stands and answers one built by other code as not yet built."
-source = "SPEC.md:225"
+source = "docs/adr/0008-a-read-never-rebuilds.md:8"
 check = ["test"] # a_read_never_serves_rows_another_version_built, a_dead_letter_another_version_left_is_not_retried
 why = "two versions of a projection meet only through the log and the loop's rebuild, both lined up by the scenario on every store; the simulation and the model have no projections"
 
 [[promise]]
 name = "no-rows-of-another-version"
 says = "A read thus never serves, nor a retry writes to, rows another version made."
-source = "SPEC.md:228"
+source = "docs/adr/0008-a-read-never-rebuilds.md:8"
 check = ["test"] # a_read_never_serves_rows_another_version_built, a_dead_letter_another_version_left_is_not_retried
 why = "two versions of a projection meet only through the log and the loop's rebuild, both lined up by the scenario on every store; the simulation and the model have no projections"
