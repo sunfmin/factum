@@ -1,12 +1,12 @@
 {
   "suites": {
     "rust": {
-      "prod_lines": 4681,
-      "test_lines": 4449,
-      "tests": 157,
+      "prod_lines": 4653,
+      "test_lines": 4439,
+      "tests": 155,
       "failures": 0,
       "test_seconds": 2.64,
-      "covered_lines": 3050,
+      "covered_lines": 3027,
       "uncovered_lines": 114
     }
   },
@@ -212,12 +212,6 @@
     },
     {
       "suite": "rust",
-      "test": "factum-sqlite::conformance::a_refused_scheduled_command_is_recorded_not_retried",
-      "hash": "1c7a8b5817e7145a",
-      "reason": "Its same-shape group is not two tests that differ by literals: it is scenarios::a_refused_scheduled_command_is_recorded_not_retried instantiated by suite! once per store (factum-conformance::memory, factum-sqlite::conformance), one body and no literal to tabulate. A table over stores would need one crate to depend on both stores, would run the same body per store (no CPU saved), and would hide which store broke; every scenario runs on every store (CLAUDE.md). Its other_test is the same scenario on the other store."
-    },
-    {
-      "suite": "rust",
       "test": "factum-sqlite::conformance::two_projectors_apply_each_event_once",
       "hash": "703a9f5e901f056d",
       "reason": "Its same-shape group is not two tests that differ by literals: it is scenarios::two_projectors_apply_each_event_once instantiated by suite! once per store (factum-conformance::memory, factum-sqlite::conformance), one body and no literal to tabulate. A table over stores would need one crate to depend on both stores, would run the same body per store (no CPU saved), and would hide which store broke; every scenario runs on every store (CLAUDE.md). Its other_test, a_projection_that_writes_an_undeclared_table_fails_the_event, is another guarantee with its own home in scenarios.rs (lib.rs: one scenario per guarantee); they share the world setup, not their assertions."
@@ -350,12 +344,6 @@
     },
     {
       "suite": "rust",
-      "test": "factum-sqlite::conformance::a_schedule_whose_runner_dies_at_its_outcome_runs_once",
-      "hash": "e0e1b5fd2c3d866f",
-      "reason": "Its same-shape group is not two tests that differ by literals: it is one scenario of scenarios.rs instantiated by suite! once per store (factum-conformance::memory, factum-sqlite::conformance), one body and no literal to tabulate. A table over stores would need one crate to depend on both stores, would run the same body per store (no CPU saved, so test_seconds could not fall), and would hide which store broke; every scenario runs on every store (CLAUDE.md). Its other_test is another guarantee with its own home in scenarios.rs (lib.rs: one scenario per guarantee), or the same scenario on the other store; they share world setup, not assertions."
-    },
-    {
-      "suite": "rust",
       "test": "factum-sqlite::conformance::a_recurring_run_whose_runner_dies_at_its_outcome_runs_once_per_period",
       "hash": "e303309be266a82d",
       "reason": "Its same-shape group is not two tests that differ by literals: it is one scenario of scenarios.rs instantiated by suite! once per store (factum-conformance::memory, factum-sqlite::conformance), one body and no literal to tabulate. A table over stores would need one crate to depend on both stores, would run the same body per store (no CPU saved, so test_seconds could not fall), and would hide which store broke; every scenario runs on every store (CLAUDE.md). Its other_test is another guarantee with its own home in scenarios.rs (lib.rs: one scenario per guarantee), or the same scenario on the other store; they share world setup, not assertions."
@@ -398,12 +386,6 @@
     },
     {
       "suite": "rust",
-      "test": "factum-conformance::memory::a_schedule_whose_runner_dies_at_its_outcome_runs_once",
-      "hash": "e0e1b5fd2c3d866f",
-      "reason": "Its same-shape group is not two tests that differ by literals: it is one scenario of scenarios.rs instantiated by suite! once per store (factum-conformance::memory, factum-sqlite::conformance), one body and no literal to tabulate. A table over stores would need one crate to depend on both stores, would run the same body per store (no CPU saved, so test_seconds could not fall), and would hide which store broke; every scenario runs on every store (CLAUDE.md). Its other_test is another guarantee with its own home in scenarios.rs (lib.rs: one scenario per guarantee), or the same scenario on the other store; they share world setup, not assertions."
-    },
-    {
-      "suite": "rust",
       "test": "factum-conformance::memory::a_recurring_command_that_writes_nothing_runs_once_per_period",
       "hash": "bc06390329069d4e",
       "reason": "Its same-shape group is not two tests that differ by literals: it is one scenario of scenarios.rs instantiated by suite! once per store (factum-conformance::memory, factum-sqlite::conformance), one body and no literal to tabulate. A table over stores would need one crate to depend on both stores, would run the same body per store (no CPU saved, so test_seconds could not fall), and would hide which store broke; every scenario runs on every store (CLAUDE.md). Its other_test is another guarantee with its own home in scenarios.rs (lib.rs: one scenario per guarantee), or the same scenario on the other store; they share world setup, not assertions."
@@ -437,6 +419,30 @@
       "test": "factum-sqlite::conformance::starting_a_process_again",
       "hash": "9437bc67c73b8e59",
       "reason": "Checks that starting a process again with the same key and other input is refused key_reused, and after it ends is refused ended, with the call made once. a_process_runs_to_completion checks only completion, status paid and one charge under the step key: none of its assertions checks a second start. Folding the restart assertions into it would put two guarantees in one scenario, against lib.rs one home per guarantee, and hide which one failed, for under 10ms of world setup."
+    },
+    {
+      "suite": "rust",
+      "test": "factum-sqlite::conformance::a_store_error_reaches_a_worker_as_it_is",
+      "hash": "70325ea13212d646",
+      "reason": "Its assertions are a failed store call reaching the worker as Error::Store, for every Call; the happy-path test asserts none of them, and folding a fault-per-call loop into it changes what it checks."
+    },
+    {
+      "suite": "rust",
+      "test": "factum-sqlite::conformance::a_call_whose_lease_runs_out_on_every_attempt_ends_unknown",
+      "hash": "16fef66ca540bf43",
+      "reason": "Same scenario function run on the sqlite store; the repo runs every scenario on every store (suite!), so the group's only difference is the backend and cannot become a table row."
+    },
+    {
+      "suite": "rust",
+      "test": "factum-conformance::memory::a_call_whose_lease_runs_out_on_every_attempt_ends_unknown",
+      "hash": "16fef66ca540bf43",
+      "reason": "Same scenario function run on the memory store; the repo runs every scenario on every store (suite!), and its assertions (3 attempts, Unknown on the last, checkout finds the charge) are not in a_call_whose_answer_was_lost_is_made_again_and_done_once."
+    },
+    {
+      "suite": "rust",
+      "test": "factum-sqlite::conformance::a_stopped_projection_goes_on_once_its_dead_letter_is_retried",
+      "hash": "8bdce254408d8bc5",
+      "reason": "OnFailure::Stop holds the projection at the dead letter (1 row) and goes on after retry; the other test uses the default skip, where later events project before retry, so folding one setup into the other changes what it checks."
     }
   ],
   "kept_files": [
@@ -476,7 +482,7 @@
   "measured": {
     "rust": {
       "uncovered_lines": 114,
-      "test_seconds": 4.82
+      "test_seconds": 5.528
     }
   }
 }
