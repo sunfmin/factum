@@ -104,6 +104,12 @@
     "sentence": "A call whose lease runs out (its runner died, or it outlived its timeout) is taken over and made again only while its attempts last: taken over after the last, it ends `Unknown`, as an at-most-once one does, since that attempt may have done the work; it ends `Failed` only when its last attempt answered an error.",
     "source": "SPEC.md:25"
   },
+  "9643ed0d87e6": {
+    "kind": "fixed-often",
+    "mark": "not",
+    "summary": "crates/conformance/src/scenarios.rs was changed by 3 fixes in 180 days, and no registered promise's check covers it",
+    "why": "scenarios.rs is the test rung itself; its three fixes keep promises already registered with test checks, whose code truefit cannot see: f499aec adds a_result_whose_lease_ran_out_meanwhile_is_refused (renew-only-a-live-lease), a_wake_while_a_runner_holds_the_process_is_not_lost (work-rows-implied-by-events) and fixes snapshots_change_no_answer (snapshot-read-only-by-its-code); ae55b29 adds a_writer_that_loses_every_race_gives_up (a-writer-gives-up-after-1000-losses); 97a2762 only speeds up a_call_whose_lease_runs_out_on_every_attempt_ends_unknown (taken-over-after-last-attempt-ends-unknown), changing no promise"
+  },
   "96d02e0abd8d": {
     "mark": "not",
     "sentence": "Every lease in factum is a claim on such a row.",
