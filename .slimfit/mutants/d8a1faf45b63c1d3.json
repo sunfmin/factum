@@ -1,0 +1,15 @@
+{
+  "tree": "b2d3355fa3acdebbbb21dfcf12b3da43cb951cef+d1fba762150c532c",
+  "picker": "codex:01a2154c-73a3-7090-b4ff-658882940230:default",
+  "author": "claude-code:18b3fbfd-384c-5878-8134-85da6970b90b:opus",
+  "picks": {
+    "rust": [
+      {
+        "name": "crates/engine/src/work.rs:46:5: replace event_json -> Value with Default::default()",
+        "why": "A process test can verify that a matching event advances the process without checking the event payload the process receives.",
+        "outcome": "killed",
+        "first_outcome": "killed"
+      }
+    ]
+  }
+}

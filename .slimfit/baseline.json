@@ -1,12 +1,12 @@
 {
   "suites": {
     "rust": {
-      "prod_lines": 4647,
-      "test_lines": 4483,
-      "tests": 157,
+      "prod_lines": 4646,
+      "test_lines": 4575,
+      "tests": 161,
       "failures": 0,
       "test_seconds": 2.64,
-      "covered_lines": 3027,
+      "covered_lines": 3021,
       "uncovered_lines": 109
     }
   },
@@ -362,12 +362,6 @@
     },
     {
       "suite": "rust",
-      "test": "factum-sqlite::conformance::a_scheduled_command_runs_once_when_due",
-      "hash": "d9e698007373621f",
-      "reason": "Its same-shape group is not two tests that differ by literals: it is one scenario of scenarios.rs instantiated by suite! once per store (factum-conformance::memory, factum-sqlite::conformance), one body and no literal to tabulate. A table over stores would need one crate to depend on both stores, would run the same body per store (no CPU saved, so test_seconds could not fall), and would hide which store broke; every scenario runs on every store (CLAUDE.md). Its other_test is another guarantee with its own home in scenarios.rs (lib.rs: one scenario per guarantee), or the same scenario on the other store; they share world setup, not assertions."
-    },
-    {
-      "suite": "rust",
       "test": "factum-sqlite::conformance::a_refusal_that_loses_its_key_answers_what_the_key_holds",
       "hash": "95a5a57d43dcdd9c",
       "reason": "Its same-shape group is not two tests that differ by literals: it is one scenario of scenarios.rs instantiated by suite! once per store (factum-conformance::memory, factum-sqlite::conformance), one body and no literal to tabulate. A table over stores would need one crate to depend on both stores, would run the same body per store (no CPU saved, so test_seconds could not fall), and would hide which store broke; every scenario runs on every store (CLAUDE.md). Its other_test is another guarantee with its own home in scenarios.rs (lib.rs: one scenario per guarantee), or the same scenario on the other store; they share world setup, not assertions."
@@ -481,8 +475,8 @@
   ],
   "measured": {
     "rust": {
-      "uncovered_lines": 109,
-      "test_seconds": 4.47
+      "uncovered_lines": 108,
+      "test_seconds": 5.214
     }
   }
 }
