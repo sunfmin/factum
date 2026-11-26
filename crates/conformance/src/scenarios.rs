@@ -14,7 +14,7 @@ use factum_core::{
 use factum_store::{AnswerResult, Batch, StoreError, Unit};
 use serde_json::json;
 
-use crate::domain::{EXPIRES_MS, LIMIT, OrderList, PICKUP_MS, TALLY};
+use crate::domain::{EXPIRES_MS, LIMIT, OrderList, PICKUP_MS, TALLY, unwritable};
 use crate::flaky::{Call, appends, records_step};
 use crate::{Backend, World, ann, id, refused, sub};
 
@@ -323,21 +323,12 @@ pub async fn a_plan_records_nothing<B: Backend>(b: &B) {
     assert_eq!(status(&e, o).await, "");
 }
 
-/// Params that cannot be written as JSON: their `Serialize` fails.
-struct Unwritable;
-
-impl serde::Serialize for Unwritable {
-    fn serialize<S: serde::Serializer>(&self, _: S) -> Result<S::Ok, S::Error> {
-        Err(serde::ser::Error::custom("unwritable params"))
-    }
-}
-
 pub async fn params_that_do_not_serialize_are_refused_with_their_cause<B: Backend>(b: &B) {
     let w = World::new(b);
     let e = w.engine("a");
     let o = id();
-    let planned = e.plan("order.place", Unwritable, ann()).await;
-    let submitted = Submission::new("order.place", Unwritable, id(), ann());
+    let planned = e.plan("order.place", unwritable::Unwritable, ann()).await;
+    let submitted = Submission::new("order.place", unwritable::Unwritable, id(), ann());
     for refusal in [planned.map(|_| ()), submitted.map(|_| ())] {
         match refusal {
             Err(Error::Rejected(r)) => {
@@ -348,6 +339,37 @@ pub async fn params_that_do_not_serialize_are_refused_with_their_cause<B: Backen
         }
     }
     assert!(e.history(&order(o)).await.unwrap().is_empty());
+}
+
+pub async fn code_that_hands_values_that_do_not_serialize_is_told_why<B: Backend>(b: &B) {
+    let w = World::new(b);
+    let e = w.engine_with(
+        factum::Model::new()
+            .command::<unwritable::PayUnwritably>()
+            .process::<unwritable::StepUnwritably>()
+            .process::<unwritable::CompleteUnwritably>(),
+        "a",
+    );
+    let o = id();
+    let scheduled = e
+        .submit(sub("order.pay_unwritably", json!({ "order": o })))
+        .await;
+    match scheduled {
+        Err(Error::Fault(why)) => assert!(why.contains("unwritable params"), "{why}"),
+        other => panic!("expected a fault, got {other:?}"),
+    }
+    assert!(e.history(&order(o)).await.unwrap().is_empty());
+    for name in ["step_unwritably", "complete_unwritably"] {
+        let p = id();
+        e.start(name, p, json!({ "order": o }), ann())
+            .await
+            .unwrap();
+        e.settle().await.unwrap();
+        match finished(&e, p).await {
+            Some(Finished::Stuck(why)) => assert!(why.contains("unwritable params"), "{why}"),
+            other => panic!("{name}: expected stuck, got {other:?}"),
+        }
+    }
 }
 
 pub async fn a_writer_that_read_an_old_version_decides_again<B: Backend>(b: &B) {

@@ -155,6 +155,7 @@ macro_rules! suite {
             a_recurring_run_another_runner_recorded_first_runs_once,
             a_plan_records_nothing,
             params_that_do_not_serialize_are_refused_with_their_cause,
+            code_that_hands_values_that_do_not_serialize_is_told_why,
             a_writer_that_read_an_old_version_decides_again,
             a_writer_that_loses_every_race_gives_up,
             versions_stay_unique_under_two_writers,

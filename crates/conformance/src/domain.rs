@@ -452,6 +452,62 @@ pub mod unreadable {
     }
 }
 
+/// Code that hands factum values whose `Serialize` fails.
+pub mod unwritable {
+    use super::*;
+
+    /// A value that cannot be written as JSON.
+    pub struct Unwritable;
+
+    impl Serialize for Unwritable {
+        fn serialize<S: serde::Serializer>(&self, _: S) -> Result<S::Ok, S::Error> {
+            Err(serde::ser::Error::custom("unwritable params"))
+        }
+    }
+
+    /// Schedules `order.pay` with params that do not serialize.
+    pub struct PayUnwritably;
+
+    impl Command for PayUnwritably {
+        const NAME: &'static str = "order.pay_unwritably";
+        type Aggregate = Orders;
+        type Params = OrderRef;
+        fn stream(p: &OrderRef) -> Uuid {
+            p.order
+        }
+        fn decide(
+            _: &Order,
+            _: &OrderRef,
+            _: &By,
+            now: Instant,
+        ) -> Result<Decision<OrderEvent>, Rejection> {
+            Ok(Decision::from(Vec::new()).schedule(now, "order.pay", Unwritable))
+        }
+    }
+
+    /// Asks for a step whose params do not serialize.
+    pub struct StepUnwritably;
+
+    impl Process for StepUnwritably {
+        const NAME: &'static str = "step_unwritably";
+        type Input = OrderRef;
+        fn next(_: &OrderRef, _: &Progress) -> Next {
+            Next::run("pay", "order.pay", Unwritable)
+        }
+    }
+
+    /// Completes with a result that does not serialize.
+    pub struct CompleteUnwritably;
+
+    impl Process for CompleteUnwritably {
+        const NAME: &'static str = "complete_unwritably";
+        type Input = OrderRef;
+        fn next(_: &OrderRef, _: &Progress) -> Next {
+            Next::complete(Unwritable)
+        }
+    }
+}
+
 /// The counter the recurring tally adds to.
 pub const TALLY: Uuid = Uuid::from_u128(0x7a11);
 
