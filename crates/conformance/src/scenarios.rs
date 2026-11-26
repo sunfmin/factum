@@ -2141,6 +2141,36 @@ pub async fn a_change_to_a_projections_tables_rebuilds_it<B: Backend>(b: &B) {
     assert!(wider.dead_letters("orders").await.unwrap().is_empty());
 }
 
+pub async fn a_projections_tables_keep_their_rows_apart<B: Backend>(b: &B) {
+    let w = World::with_orders(
+        b,
+        OrderList {
+            with_paid: true,
+            ..OrderList::default()
+        },
+    );
+    let e = w.engine("a");
+    let (o1, o2) = (place(&e, 500).await, place(&e, 700).await);
+    pay(&e, o1).await;
+    e.settle().await.unwrap();
+    assert_eq!(e.rows("orders", "orders").await.unwrap().len(), 2);
+    assert_eq!(
+        e.rows("orders", "paid").await.unwrap(),
+        vec![(o1.to_string(), json!({}))]
+    );
+    assert_eq!(
+        e.row("orders", "orders", &o1.to_string()).await.unwrap(),
+        Some(json!({ "status": "paid", "total": 500, "currency": "JPY" })),
+        "the same key in another table is another row"
+    );
+    assert!(
+        e.row("orders", "paid", &o2.to_string())
+            .await
+            .unwrap()
+            .is_none()
+    );
+}
+
 pub async fn a_projection_that_writes_an_undeclared_table_fails_the_event<B: Backend>(b: &B) {
     let w = World::with_orders(
         b,
