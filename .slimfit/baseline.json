@@ -443,6 +443,15 @@
       "test": "factum-sqlite::conformance::a_stopped_projection_goes_on_once_its_dead_letter_is_retried",
       "hash": "8bdce254408d8bc5",
       "reason": "OnFailure::Stop holds the projection at the dead letter (1 row) and goes on after retry; the other test uses the default skip, where later events project before retry, so folding one setup into the other changes what it checks."
+    },
+    {
+      "suite": "rust",
+      "test": "factum-sqlite::conformance::a_writer_that_loses_every_race_gives_up",
+      "kind": "slow-test",
+      "hash": "7927bd528ae4858c",
+      "seconds": 0.271,
+      "suite_seconds": 4.974,
+      "reason": "Its time is the bound it checks: SPEC §7 fixes that a writer gives up after losing 1000 races, and the scenario makes each of the three writers with its own Races loop (a command, a process's advance, a step's answer) lose all 1000, each loss a real re-read of the stream from the store and a re-decide. Fewer losses cannot show the bound is 1000, and dropping a writer leaves its loop unchecked. Measured (debug): 0.18s on sqlite vs 0.05s on memory; sample shows the cost is the engine re-folding the stream (serde decode) plus a sqlite read per loss; prepare_cached for the store's statements changed nothing (0.20s before and after)."
     }
   ],
   "kept_files": [
