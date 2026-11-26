@@ -9,8 +9,9 @@
 //! Each handle owns one connection on a thread of its own, so the async
 //! methods never block the caller's runtime; they need no particular one.
 //!
-//! The events log is read and written here; the work table (`work`) and a
-//! projection's tables (`tables`) keep their columns and SQL to themselves.
+//! The events log and snapshots are read and written here; the work table
+//! (`work`) and a projection's state (`tables`) keep their columns and SQL
+//! to themselves.
 
 mod schema;
 mod tables;
@@ -24,7 +25,7 @@ use factum_core::{
 };
 use factum_store::{
     Answer, Batch, Checkpoint, Claim, DeadLetter, Result, Snapshot, Store, StoreError, Unit,
-    check_batch, check_unit, read_answer,
+    check_unit, read_answer,
 };
 use rusqlite::{Connection, OptionalExtension, Row, Transaction, TransactionBehavior, params};
 
@@ -269,23 +270,7 @@ impl Store for SqliteStore {
 
     async fn checkpoint(&self, projection: &str) -> Result<Option<Checkpoint>> {
         let projection = projection.to_string();
-        self.run(move |c| {
-            c.query_row(
-                "SELECT version, schema, position, stopped FROM checkpoints WHERE projection = ?1",
-                [projection],
-                |r| {
-                    Ok(Checkpoint {
-                        version: r.get::<_, i64>(0)? as u32,
-                        schema: r.get(1)?,
-                        position: Position(0, r.get::<_, i64>(2)? as u64),
-                        stopped: r.get::<_, i64>(3)? != 0,
-                    })
-                },
-            )
-            .optional()
-            .map_err(backend)
-        })
-        .await
+        self.run(move |c| tables::checkpoint(c, &projection)).await
     }
 
     async fn reset_projection(
@@ -297,58 +282,12 @@ impl Store for SqliteStore {
     ) -> Result<()> {
         let (projection, schema, tables) =
             (projection.to_string(), schema.to_string(), tables.to_vec());
-        self.write(move |tx| {
-            tables::reset(tx, &projection, &tables)?;
-            tx.execute("DELETE FROM dead_letters WHERE projection = ?1", [&projection]).map_err(backend)?;
-            tx.execute(
-                "INSERT OR REPLACE INTO checkpoints (projection, version, schema, position, stopped) VALUES (?1, ?2, ?3, 0, 0)",
-                params![projection, version, schema],
-            )
-            .map(|_| ())
-            .map_err(backend)
-        })
-        .await
+        self.write(move |tx| tables::reset(tx, &projection, version, &schema, &tables))
+            .await
     }
 
     async fn apply_projection(&self, batch: Batch) -> Result<()> {
-        self.write(move |tx| {
-            let at: Option<(i64, i64)> = tx
-                .query_row("SELECT version, position FROM checkpoints WHERE projection = ?1", [&batch.projection], |r| {
-                    Ok((r.get(0)?, r.get(1)?))
-                })
-                .optional()
-                .map_err(backend)?;
-            check_batch(
-                &batch,
-                at.map(|(v, p)| (v as u32, Position(0, p as u64))),
-                |e| {
-                    tx.query_row("SELECT 1 FROM dead_letters WHERE projection = ?1 AND event = ?2", params![batch.projection, e.to_string()], |_| Ok(()))
-                        .optional()
-                        .map(|f| f.is_some())
-                        .map_err(backend)
-                },
-                |table| tables::has(tx, &batch.projection, table),
-            )?;
-            for e in &batch.resolved {
-                tx.execute("DELETE FROM dead_letters WHERE projection = ?1 AND event = ?2", params![batch.projection, e.to_string()])
-                    .map_err(backend)?;
-            }
-            tables::apply(tx, &batch.projection, &batch.ops)?;
-            for d in &batch.dead {
-                tx.execute(
-                    "INSERT INTO dead_letters (projection, position, event, stream, version, error) VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
-                    params![d.projection, d.position.1 as i64, d.event.to_string(), d.stream.to_string(), d.version.0 as i64, d.error],
-                )
-                .map_err(backend)?;
-            }
-            tx.execute(
-                "UPDATE checkpoints SET position = ?2, stopped = ?3 WHERE projection = ?1",
-                params![batch.projection, batch.to.1 as i64, batch.stop],
-            )
-            .map(|_| ())
-            .map_err(backend)
-        })
-        .await
+        self.write(move |tx| tables::apply(tx, &batch)).await
     }
 
     async fn query(&self, projection: &str, query: &Query) -> Result<Vec<(String, Value)>> {
@@ -371,28 +310,7 @@ impl Store for SqliteStore {
 
     async fn dead_letters(&self, projection: &str) -> Result<Vec<DeadLetter>> {
         let projection = projection.to_string();
-        self.run(move |c| {
-            let mut stmt = c
-                .prepare("SELECT position, event, stream, version, error FROM dead_letters WHERE projection = ?1 ORDER BY position")
-                .map_err(backend)?;
-            let rows = stmt
-                .query_map([&projection], |r| {
-                    Ok((r.get::<_, i64>(0)?, r.get::<_, String>(1)?, r.get::<_, String>(2)?, r.get::<_, i64>(3)?, r.get::<_, String>(4)?))
-                })
-                .map_err(backend)?;
-            rows.map(|r| {
-                let (position, event, stream, version, error) = r.map_err(backend)?;
-                Ok(DeadLetter {
-                    projection: projection.clone(),
-                    position: Position(0, position as u64),
-                    event: uuid(&event)?,
-                    stream: StreamId::try_from(stream).map_err(backend)?,
-                    version: Version(version as u64),
-                    error,
-                })
-            })
-            .collect()
-        })
-        .await
+        self.run(move |c| tables::dead_letters(c, &projection))
+            .await
     }
 }
