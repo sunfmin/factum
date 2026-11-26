@@ -446,6 +446,30 @@
       "seconds": 0.271,
       "suite_seconds": 4.974,
       "reason": "Its time is the bound it checks: SPEC §7 fixes that a writer gives up after losing 1000 races, and the scenario makes each of the three writers with its own Races loop (a command, a process's advance, a step's answer) lose all 1000, each loss a real re-read of the stream from the store and a re-decide. Fewer losses cannot show the bound is 1000, and dropping a writer leaves its loop unchecked. Measured (debug): 0.18s on sqlite vs 0.05s on memory; sample shows the cost is the engine re-folding the stream (serde decode) plus a sqlite read per loss; prepare_cached for the store's statements changed nothing (0.20s before and after)."
+    },
+    {
+      "suite": "rust",
+      "test": "factum-sqlite::conformance::a_scheduled_command_runs_once_when_due",
+      "hash": "a112acb2af3bc3ab",
+      "reason": "same-shape: the group is one scenario instantiated by suite! on both stores (memory, sqlite), not tests that differ by literals; a table over stores runs the same body per store (test_seconds cannot fall) and hides which store broke"
+    },
+    {
+      "suite": "rust",
+      "test": "factum-sqlite::conformance::a_projections_tables_keep_their_rows_apart",
+      "hash": "34b07e49b16b3c16",
+      "reason": "same-shape: group is this scenario on both stores via suite!, a store table saves no CPU and hides which store broke; other_test a_projections_tables_keep_their_rows_apart is another guarantee with its own home (lib.rs): its paid-table assertions need with_paid, and projection_rows' rebuild-and-compare and placed-o2 assertions are asserted nowhere there"
+    },
+    {
+      "suite": "rust",
+      "test": "factum-sqlite::conformance::code_that_hands_values_that_do_not_serialize_is_told_why",
+      "hash": "ff7c0d4420460391",
+      "reason": "same-shape: the group is one scenario instantiated by suite! on both stores (memory, sqlite), not tests that differ by literals; a table over stores runs the same body per store (test_seconds cannot fall) and hides which store broke"
+    },
+    {
+      "suite": "rust",
+      "test": "factum-conformance::memory::projection_rows_follow_the_log_and_rebuild_the_same",
+      "hash": "4fb968418f35065d",
+      "reason": "same-shape: group is this scenario on both stores via suite!, a store table saves no CPU and hides which store broke; other_test a_projections_tables_keep_their_rows_apart is another guarantee with its own home (lib.rs): its paid-table assertions need with_paid, and projection_rows' rebuild-and-compare and placed-o2 assertions are asserted nowhere there"
     }
   ],
   "kept_files": [
