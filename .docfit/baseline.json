@@ -1,7 +1,4 @@
 {
-  "crates/sqlite/src/schema.rs": {
-    "local_refs": 10
-  },
   "crates/sqlite/tests/conformance.rs": {
     "local_refs": 5
   },
