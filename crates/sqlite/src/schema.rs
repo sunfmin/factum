@@ -86,26 +86,27 @@ CREATE TABLE IF NOT EXISTS dead_letters (
 /// `tests/conformance.rs` fails otherwise).
 const STEPS: &[fn(&Transaction) -> rusqlite::Result<()>] = &[
     |tx| tx.execute_batch(FIRST),
-    // factum#14. Some hosts had it added by hand before this step existed.
+    // Set on a claim that took a work row from a holder whose lease ran
+    // out. Some hosts had it added by hand before this step existed.
     |tx| add_column(tx, "work", "taken_over", "INTEGER NOT NULL DEFAULT 0"),
-    // factum#39: a refusal keeps nothing for its key any more.
+    // A refusal keeps nothing for its key any more.
     |tx| {
         tx.execute_batch(
             "DELETE FROM answers WHERE json_extract(answer, '$.result.Rejected') IS NOT NULL",
         )
     },
-    // factum#40: an applied answer is read from its events by key, not kept
+    // An applied answer is read from its events by key, not kept
     // as a copy; only its fingerprint and stream, or a refusal, are kept.
     |tx| {
         tx.execute_batch(AS_KEPT)?;
         tx.execute_batch("CREATE INDEX events_key ON events (json_extract(meta, '$.key'));")
     },
-    // factum#41: an answer that wrote no events keeps nothing for its key
+    // An answer that wrote no events keeps nothing for its key
     // any more. A runner's such row goes too: at worst a recurring command
     // runs once more in the period this opens in.
     |tx| tx.execute_batch("DELETE FROM answers WHERE json_type(answer, '$.result.Ok') = 'null'"),
-    // factum#42: an answer that wrote events is read from them alone.
-    // Rows an older binary wrote in the shape before factum#40 after this
+    // An answer that wrote events is read from them alone. Rows an older
+    // binary wrote as copies, the shape before the fourth step, after this
     // database had left it (seen on factorium's host) are first brought to
     // it, as that step did.
     |tx| {
@@ -113,7 +114,7 @@ const STEPS: &[fn(&Transaction) -> rusqlite::Result<()>] = &[
         tx.execute_batch(&format!("{AS_KEPT} WHERE {old}"))?;
         tx.execute_batch(FINGERPRINT_IN_META)
     },
-    // factum#43: a runner's outcome is an event committed with its submit,
+    // A runner's outcome is an event committed with its submit,
     // so nothing is kept per key beside the log. A row left from a runner
     // that died between its two commits goes: that step or schedule decides
     // again, that recurring command may run once more in the period this
@@ -134,8 +135,8 @@ WHERE json_extract(events.meta, '$.key') = k.key AND events.stream = k.stream;
 DELETE FROM answers WHERE json_type(answer, '$.result.Ok') = 'text';
 ";
 
-/// Each answer kept as a copy (before factum#40) becomes what factum#40
-/// kept for it, as JSON: its fingerprint and its events' stream (null if
+/// Each answer kept as a copy (before the fourth step) becomes what that
+/// step keeps for it, as JSON: its fingerprint and its events' stream (null if
 /// none), or its refusal.
 const AS_KEPT: &str = "
 UPDATE answers SET answer = json_object('fingerprint', json_extract(answer, '$.fingerprint'), 'result',
@@ -186,7 +187,8 @@ fn migrate(conn: &mut Connection) -> Result<()> {
 /// has; with none free, 20 µs.
 const STEP: i64 = 1024;
 
-/// Switches a file written before factum#44 to incremental `auto_vacuum`,
+/// Switches a file written with `auto_vacuum` off, SQLite's default and every
+/// file's before 2026-11-23, to incremental `auto_vacuum`,
 /// which takes one full `VACUUM`. It runs at open, before the store serves
 /// anyone, and says how long it took.
 fn make_incremental(conn: &Connection, path: &Path) -> rusqlite::Result<()> {
