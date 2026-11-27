@@ -1,0 +1,10 @@
+{
+  "tree": "77f9835b6b3222dc0db77f16c10ad614bc4d71a7+d1fba762150c532c",
+  "lines": 841,
+  "serves": "factum#86",
+  "considered": "Reusing MemoryStore's state (its Inner is private and holds no op log, so a fold of records cannot be built on it without changing factum-store's API); the shared rules already in factum-store (check_unit, check_batch, claim_row, wake_row, release_row, apply_op, read_answer), which the sealed store calls rather than copies; one encryption crate, chacha20poly1305, and no framing library",
+  "reviewer": "codex:01a21d10-d44e-7013-b948-4b53cec03006:default",
+  "author": "claude-code:5cb2f8fb-120b-5c11-aceb-d642dce6002c:opus",
+  "cut": "In crates/sealed/src/file.rs, share nonce generation and encryption between header and seal, pass the file ID into seal so compact can publish it after success and drop the save-and-restore branch, and use a shrinking slice in refresh so self.end is the only byte cursor. In crates/sealed/src/state.rs and crates/sealed/src/lib.rs, embed the existing Checkpoint in Built with serde flatten to preserve the JSON fields, and delete Built::checkpoint and the duplicated fields. In crates/sealed/examples/measure.rs and crates/sealed/tests/conformance.rs, share the identical padded work-row setup and lease claim used to drive compaction.",
+  "answer": "Made each cut: one seal() for header and records with the file id passed in, compact sets the id only after the rename (no save and restore), refresh walks a shrinking slice with self.end its only cursor; Built holds factum-store's Checkpoint whole (it now derives serde; a plain field, not flatten, since no file of format 1 exists yet) and Built::checkpoint is gone; tests/drive/mod.rs holds the event builder, the key and the claimed padded row, used by the tests and by the example through #[path]. Net 89 added, 177 removed in that commit."
+}
