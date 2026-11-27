@@ -1065,6 +1065,14 @@ pub async fn starting_a_process_again<B: Backend>(b: &B) {
     assert_eq!(w.payments.calls(), 1);
 }
 
+pub async fn a_process_never_started_is_unknown<B: Backend>(b: &B) {
+    let w = World::new(b);
+    let e = w.engine("a");
+    let (_, p) = checkout(&e, 100).await;
+    assert_eq!(refused(e.process(id()).await), "unknown");
+    assert_eq!(e.process(p).await.unwrap().name, "checkout");
+}
+
 pub async fn a_process_starts_once_on_the_event_it_starts_on<B: Backend>(b: &B) {
     let w = World::new(b);
     let (a, bb) = (w.engine("a"), w.engine("b"));
