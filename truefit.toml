@@ -291,7 +291,7 @@ why = "a crash can tear only the last record, since every append is made and syn
 name = "sealed-damage-is-an-error"
 says = "Any other record that does not open, or does not decode, is an error naming the file and the record, never a guessed state (ADR 0011)."
 source = "docs/adr/0021-a-sealed-file-store-for-hosts-without-a-c-compiler.md:18"
-check = ["test"] # crates/sealed/tests/conformance.rs: a_changed_byte_in_a_middle_record_is_an_error_naming_it
+check = ["test"] # crates/sealed/tests/conformance.rs: a_changed_byte_in_a_middle_record_is_an_error_naming_it, a_record_out_of_its_place_is_an_error_naming_it
 
 [[promise]]
 name = "sealed-processes-see-each-other"

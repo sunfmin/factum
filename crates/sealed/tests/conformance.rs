@@ -214,7 +214,13 @@ async fn compaction_keeps_every_event_and_the_current_state_and_shrinks_the_file
     let store = SealedStore::open(&path, KEY).unwrap();
     let other = SealedStore::open(&path, KEY).unwrap();
     let s = StreamId::new("note", Uuid::now_v7());
-    note(&store, &s, 0, json!(0)).await;
+    // 200 KB the file keeps, so a compaction waits for as much waste.
+    let mut events: Vec<_> = (0..20)
+        .map(|i| json!({ "n": i, "pad": "x".repeat(10_000) }))
+        .collect();
+    for (i, data) in events.iter().enumerate() {
+        note(&store, &s, i as u64, data.clone()).await;
+    }
     let (id, lease) = claimed_row(&store).await;
     // Each renew writes the whole row again, over 300 bytes: 1,000 of them
     // write over 300 KiB the file does not keep.
@@ -223,23 +229,93 @@ async fn compaction_keeps_every_event_and_the_current_state_and_shrinks_the_file
         let renewed = store.renew(WorkKind::Task, id, lease, Instant(0), Instant(i));
         assert!(renewed.await.unwrap());
         if i % 100 == 0 {
-            note(&other, &s, i as u64 / 100, json!(i / 100)).await;
+            events.push(json!(i));
+            note(&other, &s, 19 + i as u64 / 100, json!(i)).await;
         }
         let size = std::fs::metadata(&path).unwrap().len();
-        shrank += usize::from(size < last);
+        if size < last {
+            shrank += 1;
+            assert!(
+                size * 2 < last + 4096,
+                "compacted at {last} to {size}: waste under half"
+            );
+        }
         (largest, last) = (largest.max(size), size);
     }
     assert!(shrank >= 2, "compacted {shrank} times");
-    assert!(largest < 100 * 1024, "the file grew to {largest}");
+    assert!(largest < 600 * 1024, "the file grew to {largest}");
     let fresh = SealedStore::open(&path, KEY).unwrap();
     for handle in [&store, &other, &fresh] {
-        assert_eq!(
-            log(handle).await,
-            (0..=10).map(|i| json!(i)).collect::<Vec<_>>()
-        );
+        assert_eq!(log(handle).await, events);
         let held = handle.work(WorkKind::Task, id).await.unwrap().unwrap();
         assert_eq!(held.lease_until, Some(Instant(1000)));
     }
+}
+
+#[tokio::test]
+async fn a_record_out_of_its_place_is_an_error_naming_it() {
+    let path = three_records(json!(2)).await;
+    let (starts, _) = records(&path);
+    let mut bytes = std::fs::read(&path).unwrap();
+    let first = bytes[starts[0]..starts[1]].to_vec();
+    let second = bytes[starts[1]..starts[2]].to_vec();
+    bytes.splice(starts[0]..starts[2], second.into_iter().chain(first));
+    std::fs::write(&path, bytes).unwrap();
+    let said = open_err(&path, KEY);
+    assert!(said.contains("record 0 "), "{said}");
+}
+
+/// Set in a child process whose files may not grow past a limit: the file.
+const FULL: &str = "FACTUM_SEALED_FULL";
+
+/// A write that fails part way, the disk full, leaves the handle as the
+/// file is: without it, and able to write once there is room.
+#[tokio::test]
+async fn full_child() {
+    let Ok(path) = std::env::var(FULL) else {
+        return;
+    };
+    let store = SealedStore::open(&path, KEY).unwrap();
+    let s = StreamId::new("note", Uuid::now_v7());
+    let unit = Unit {
+        appends: vec![Append {
+            stream: s.clone(),
+            expected: Version(0),
+            events: vec![event(&s, 1, json!("x".repeat(100_000)))],
+        }],
+        ..Unit::default()
+    };
+    assert!(store.commit(unit).await.is_err(), "no room for 100 KB");
+    assert_eq!(log(&store).await, [json!("before")]);
+    note(&store, &s, 0, json!("small")).await;
+    assert_eq!(log(&store).await, [json!("before"), json!("small")]);
+}
+
+#[cfg(unix)]
+#[tokio::test]
+async fn a_write_that_fails_part_way_leaves_the_handle_as_the_file_is() {
+    let path = new_path();
+    let store = SealedStore::open(&path, KEY).unwrap();
+    note(
+        &store,
+        &StreamId::new("note", Uuid::now_v7()),
+        0,
+        json!("before"),
+    )
+    .await;
+    // Room for 8 to 16 KiB more, as the shell counts blocks of 512 or 1024.
+    let blocks = std::fs::metadata(&path).unwrap().len() / 512 + 16;
+    let exe = std::env::current_exe().unwrap();
+    let script = format!("trap '' XFSZ; ulimit -f {blocks}; exec \"$0\" --exact full_child");
+    let child = Command::new("/bin/sh")
+        .args(["-c", &script])
+        .arg(exe)
+        .env(FULL, &path)
+        .status()
+        .unwrap();
+    assert!(child.success());
+    let again = SealedStore::open(&path, KEY).unwrap();
+    assert_eq!(log(&again).await, [json!("before"), json!("small")]);
 }
 
 #[tokio::test]
