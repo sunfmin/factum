@@ -475,14 +475,6 @@
   "kept_files": [
     {
       "suite": "rust",
-      "file": "crates/engine/src/engine.rs",
-      "prod_lines": 746,
-      "commits_90d": 9,
-      "commits_total": 9,
-      "reason": "Deep already: 8 public calls (submit, plan, state, history, start, process, tick, settle) hide idempotent replay, race retry (Races), snapshots, upcasting and dispatch; every event goes through the one private write(). Remaining smells are internal and small (process_state pass-through, record's 7 args), not worth a change at this churn."
-    },
-    {
-      "suite": "rust",
       "file": "crates/engine/src/work.rs",
       "prod_lines": 586,
       "commits_90d": 10,
@@ -504,6 +496,14 @@
       "commits_90d": 23,
       "commits_total": 23,
       "reason": "Deep enough after its splits: the 23 commits in 90 days are mostly the moves that already deepened it (schema.rs factum#48, tables.rs and work.rs factum#57, checkpoints into tables.rs factum#68), taking it from 813 to 257 prod lines. What remains is open/path plus the Store trait (SPEC §3), a seam with two adapters; the per-call methods are the trait's adapter bodies (marshal args onto the connection thread, one immediate transaction per write), not pass-throughs, and the events log and snapshots SQL left here are this file's own concern. Rules every store shares already live in factum-store; tests cross only the engine API. Splitting the events log into its own module would move lines, not add depth."
+    },
+    {
+      "suite": "rust",
+      "file": "crates/engine/src/engine.rs",
+      "prod_lines": 653,
+      "commits_90d": 18,
+      "commits_total": 18,
+      "reason": "Still deep, and smaller than at its last keep (746 -> 653 prod lines): the same 8 public calls (submit, plan, state, history, start, process, tick, settle) hide idempotent replay by key and fingerprint, race retry (Races, ADR 0017), snapshots, upcasting, the ending check and dispatch; every event still goes through the one private write()/unit(). The 9 commits since were behaviour changes behind that interface (factum#39-43 runner outcomes and refusals, #70 serialization, #78 doc rehome), not one concept spreading. Tests reach it only through conformance scenarios. What is left is small and internal (process_state, a one-line pass-through over process_events; record's 7 args, used 3 times), not worth a change."
     }
   ],
   "measured": {
