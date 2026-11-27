@@ -17,12 +17,22 @@ budget core 5000
 budget store 3000
 budget engine 5000
 budget sqlite 3000
+budget sealed 2500
+
+# factum-sealed builds with no C compiler, for every target (ADR 0021):
+# nothing in its tree is `cc`, and it builds for Windows with none.
+if ! cargo tree -q -p factum-sealed -e build,normal --target all -i cc 2>&1 |
+  grep -q 'did not match any packages'; then
+  echo "gate: factum-sealed's tree has cc (cargo tree -p factum-sealed -i cc)" >&2
+  exit 1
+fi
 
 # Each Markdown file in its one home, within its budget (docfit.toml,
 # measured against .docfit/baseline.json); no file cites the local tracker anew.
 docfit check
 cargo fmt --all --check
 cargo clippy --workspace --all-targets --quiet -- -D warnings
+CC=false cargo clippy -p factum-sealed --target x86_64-pc-windows-msvc --quiet -- -D warnings
 # Every scenario on every store, measured against .slimfit/baseline.json.
 slimfit check
 # The seeded simulation of the engine (truefit.toml): kept failing seeds

@@ -267,3 +267,41 @@ says = "A read thus never serves, nor a retry writes to, rows another version ma
 source = "docs/adr/0008-a-read-never-rebuilds.md:8"
 check = ["test"] # a_read_never_serves_rows_another_version_built, a_dead_letter_another_version_left_is_not_retried
 why = "two versions of a projection meet only through the log and the loop's rebuild, both lined up by the scenario on every store; the simulation and the model have no projections"
+
+[[promise]]
+name = "sealed-builds-without-cc"
+says = "Nothing in its tree, for any target, needs `cc`."
+source = "docs/adr/0021-a-sealed-file-store-for-hosts-without-a-c-compiler.md:7"
+check = ["test"] # gate.sh: cargo tree -p factum-sealed --target all -i cc finds nothing; clippy for x86_64-pc-windows-msvc with CC=false
+
+[[promise]]
+name = "sealed-wrong-key-fails-at-open"
+says = "a wrong key fails at open and says so"
+source = "docs/adr/0021-a-sealed-file-store-for-hosts-without-a-c-compiler.md:10"
+check = ["test"] # crates/sealed/tests/conformance.rs: a_wrong_key_fails_at_open
+
+[[promise]]
+name = "sealed-torn-last-record-dropped"
+says = "A last record cut short or that does not open is a write a crash cut off: it is left out, and the next write cuts it off under the lock."
+source = "docs/adr/0021-a-sealed-file-store-for-hosts-without-a-c-compiler.md:17"
+check = ["test"] # crates/sealed/tests/conformance.rs: a_torn_last_record_is_dropped_and_cut_off_at_the_next_write
+why = "a crash can tear only the last record, since every append is made and synced under the exclusive lock; the test tears it both ways (cut short, a byte changed) and no order of runners adds another"
+
+[[promise]]
+name = "sealed-damage-is-an-error"
+says = "Any other record that does not open, or does not decode, is an error naming the file and the record, never a guessed state (ADR 0011)."
+source = "docs/adr/0021-a-sealed-file-store-for-hosts-without-a-c-compiler.md:18"
+check = ["test"] # crates/sealed/tests/conformance.rs: a_changed_byte_in_a_middle_record_is_an_error_naming_it
+
+[[promise]]
+name = "sealed-processes-see-each-other"
+says = "Under the lock a handle checks that its file is still the one at the path (by the file id), folds the records appended since it last looked, then checks for `Conflict`, `KeyTaken`, `LeaseLost` or `Stale`, appends and syncs (`sync_data`) before it unlocks."
+source = "docs/adr/0021-a-sealed-file-store-for-hosts-without-a-c-compiler.md:22"
+check = ["test"] # crates/sealed/tests/conformance.rs: two_processes_commit_alternately_and_see_each_others_events, and every scenario of suite! with each runner on a handle of its own
+why = "the OS lock makes every transaction one at a time, so an order of handles is all there is to vary; the scenarios' parallel runners (runners_in_parallel_do_each_thing_once, writers_in_parallel_keep_versions_unique) and two child processes taking turns vary it"
+
+[[promise]]
+name = "sealed-compaction-keeps-events-and-state"
+says = "When it is over half the file and over 64 KiB, the write that finds it rewrites the file under the lock as every event and the current state, under a new file id, to `<file>.compacting`, synced, then renamed over the file."
+source = "docs/adr/0021-a-sealed-file-store-for-hosts-without-a-c-compiler.md:25"
+check = ["test"] # crates/sealed/tests/conformance.rs: compaction_keeps_every_event_and_the_current_state_and_shrinks_the_file
