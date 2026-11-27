@@ -179,6 +179,7 @@ macro_rules! suite {
             two_runners_take_each_step_once,
             a_runner_that_dies_loses_its_process_to_another,
             starting_a_process_again,
+            a_process_never_started_is_unknown,
             a_process_starts_once_on_the_event_it_starts_on,
             a_worker_claims_heartbeats_and_finishes_a_task,
             a_failed_attempt_is_tried_again,
