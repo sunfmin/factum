@@ -311,6 +311,8 @@ async fn a_write_that_fails_part_way_leaves_the_handle_as_the_file_is() {
         .args(["-c", &script])
         .arg(exe)
         .env(FULL, &path)
+        // A coverage run's profile would be cut short by the limit too.
+        .env("LLVM_PROFILE_FILE", "/dev/null")
         .status()
         .unwrap();
     assert!(child.success());
