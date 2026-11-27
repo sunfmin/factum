@@ -410,5 +410,11 @@
     "mark": "not",
     "sentence": "Await(event, within) \\",
     "source": "SPEC.md:24"
+  },
+  "f9dfa2e3b02a": {
+    "kind": "fixed-often",
+    "mark": "not",
+    "summary": "crates/conformance/src/scenarios.rs was changed by 3 fixes in 180 days, and no registered promise's check covers it",
+    "why": "scenarios.rs is the conformance tests; its fixes keep promises already registered with test checks: a-writer-gives-up-after-1000-losses (ae55b29, a_writer_that_loses_every_race_gives_up), renew-only-a-live-lease and work-rows-implied-by-events and snapshot-read-only-by-its-code (f499aec: a_result_whose_lease_ran_out_meanwhile_is_refused, a_wake_while_a_runner_holds_the_process_is_not_lost, snapshots_change_no_answer), taken-over-after-last-attempt-ends-unknown (97a2762, a speed fix to its scenario); a test check's code truefit cannot see"
   }
 }
