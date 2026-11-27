@@ -1,0 +1,40 @@
+{
+  "tree": "77f9835b6b3222dc0db77f16c10ad614bc4d71a7+d1fba762150c532c",
+  "picker": "codex:01a21d14-c454-75f0-8cf2-4471edfd7fe9:default",
+  "author": "claude-code:5cb2f8fb-120b-5c11-aceb-d642dce6002c:opus",
+  "picks": {
+    "rust": [
+      {
+        "name": "crates/sealed/src/file.rs:119:33: delete ! in Sealed::write",
+        "why": "Ordinary conflicts fail before emitting ops, so the tests may miss a failed append leaving the same handle's in-memory state ahead of disk.",
+        "outcome": "killed",
+        "first_outcome": "survived"
+      },
+      {
+        "name": "crates/sealed/src/file.rs:327:25: replace / with % in Sealed::compact",
+        "why": "Repeated renewals make most of the test file waste, so the test may miss premature compaction when waste exceeds 64 KiB but occupies less than half the file.",
+        "outcome": "killed",
+        "first_outcome": "survived"
+      },
+      {
+        "name": "crates/sealed/src/file.rs:371:5: replace aad -> Vec<u8> with vec![]",
+        "why": "Byte flips still fail authentication, but the tests may never swap two intact records or move one between files opened with the same key.",
+        "outcome": "killed",
+        "first_outcome": "survived"
+      },
+      {
+        "name": "crates/sealed/src/lib.rs:219:43: replace < with <= in <impl Store for SealedStore>::keep_snapshot",
+        "why": "Snapshot tests may miss a second write with the same version and code but different state overwriting the stored snapshot.",
+        "outcome": "survived",
+        "first_outcome": "survived"
+      },
+      {
+        "name": "crates/sealed/src/state.rs:283:21: replace && with || in State::claimable",
+        "why": "Same-key ordering tests may pass even if an older row with the same kind and name but a different ordering key blocks a claim.",
+        "outcome": "killed",
+        "first_outcome": "killed"
+      }
+    ]
+  },
+  "added_lines": 842
+}

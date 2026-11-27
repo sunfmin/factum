@@ -357,6 +357,12 @@
     "source": "docs/adr/0015-a-seeded-simulation-and-a-model-keep-the-same-promises.md:35",
     "why": "a rationale or description sentence written when SPEC.md was rehomed into docs/adr/: it says why a decision holds or what a check does, and promises nothing a check could break"
   },
+  "e57ce4def6bc": {
+    "mark": "not",
+    "sentence": "An appended log keeps the crash story to one rule: only the last record may be torn.",
+    "source": "docs/adr/0021-a-sealed-file-store-for-hosts-without-a-c-compiler.md:48",
+    "why": "the reason for the design, restating sealed-torn-last-record-dropped, which is registered"
+  },
   "e706ea069dd6": {
     "mark": "not",
     "sentence": "The `Store` trait (§3) and the in-memory store, the reference every other store is held to.",

@@ -10,6 +10,7 @@ Each crate holds one part, and its `src/` stays within a budget of lines:
 | `factum-store` | The `Store` trait (ADR 0010, ADR 0011) and the in-memory store, the reference every other store is held to. | 3,000 |
 | `factum` | The engine: submissions, reads, ticks, the worker API, queries and dead letters, samples, the clock. Generic over `Store`; async, on no particular runtime; its futures are `Send`. | 5,000 |
 | `factum-sqlite` | `Store` on SQLite: one file, writers take turns (`BEGIN IMMEDIATE`); each handle's connection on a thread of its own; each projection table a table of its own, declared columns generated from the row and indexed. | 3,000 |
+| `factum-sealed` | `Store` on one file of sealed records, appended (ADR 0021): pure Rust, no `cc` for any target; several processes under an OS file lock; compacted when its waste passes half the file. | 2,500 |
 | `factum-postgres` | `Store` on Postgres, extracted from bizkernel, many writers. Not built yet. | 3,000 |
 | `factum-conformance` | The scenarios every store must pass (ADR 0014). Not published. | — |
 

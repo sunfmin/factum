@@ -1,0 +1,23 @@
+[package]
+name = "factum-sealed"
+description = "factum's store on one file of sealed, appended records: pure Rust, several processes, encrypted at rest"
+version.workspace = true
+edition.workspace = true
+# `File::lock` came in 1.89.
+rust-version = "1.89"
+repository.workspace = true
+
+[dependencies]
+factum-core.workspace = true
+factum-store.workspace = true
+chacha20poly1305 = { version = "0.10", default-features = false, features = ["alloc", "getrandom"] }
+serde.workspace = true
+serde_json = { workspace = true, features = ["raw_value"] }
+
+[dev-dependencies]
+factum.workspace = true
+factum-conformance.workspace = true
+tokio = { workspace = true, features = ["rt", "macros"] }
+
+[lints]
+workspace = true

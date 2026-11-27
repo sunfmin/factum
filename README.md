@@ -24,6 +24,7 @@ engine.tick().await?; // advance processes, deliver actions, run what is due, ca
 | `factum-core` | The pure half: events, streams, keys, `decide`, `next`. |
 | `factum-store` | The store contract, and an in-memory store. |
 | `factum-sqlite` | The store on SQLite. |
+| `factum-sealed` | The store on one encrypted file, in pure Rust. |
 | `factum-conformance` | The scenarios every store must pass. |
 
 Its words: [GLOSSARY.md](GLOSSARY.md). What it guarantees, what it leaves

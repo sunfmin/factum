@@ -1,16 +1,31 @@
 {
   "suites": {
     "rust": {
-      "prod_lines": 4674,
-      "test_lines": 4638,
-      "tests": 165,
+      "prod_lines": 5515,
+      "test_lines": 5073,
+      "tests": 254,
       "failures": 0,
       "test_seconds": 2.64,
-      "covered_lines": 3052,
+      "covered_lines": 3646,
       "uncovered_lines": 100
     }
   },
-  "loosened": [],
+  "loosened": [
+    {
+      "suite": "rust",
+      "metric": "survived_mutants",
+      "from": 0.0,
+      "to": 1.0,
+      "reason": "keep_snapshot's < as <= changes nothing observable: it only differs for a snapshot of the same version and the same code, which fold the same events with the same code into the same state; the Store contract keeps it 'unless a later version is kept already', which allows both, and the memory and SQLite stores keep only a strictly newer one, as this does"
+    },
+    {
+      "suite": "rust",
+      "metric": "survived_mutants",
+      "from": 0.0,
+      "to": 1.0,
+      "reason": "keep_snapshot's < as <= changes nothing observable: it only differs for a snapshot of the same version and the same code, which fold the same events with the same code into the same state; the Store contract keeps it 'unless a later version is kept already', which allows both, and the memory and SQLite stores keep only a strictly newer one, as this does"
+    }
+  ],
   "kept": [
     {
       "suite": "rust",
@@ -550,8 +565,8 @@
   ],
   "measured": {
     "rust": {
-      "uncovered_lines": 100,
-      "test_seconds": 5.185
+      "uncovered_lines": 125,
+      "test_seconds": 10.844
     }
   }
 }
