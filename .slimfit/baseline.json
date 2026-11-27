@@ -470,6 +470,48 @@
       "test": "factum-conformance::memory::projection_rows_follow_the_log_and_rebuild_the_same",
       "hash": "4fb968418f35065d",
       "reason": "same-shape: group is this scenario on both stores via suite!, a store table saves no CPU and hides which store broke; other_test a_projections_tables_keep_their_rows_apart is another guarantee with its own home (lib.rs): its paid-table assertions need with_paid, and projection_rows' rebuild-and-compare and placed-o2 assertions are asserted nowhere there"
+    },
+    {
+      "suite": "rust",
+      "test": "factum-sqlite::conformance::a_schedule_whose_runner_dies_at_its_outcome_runs_once",
+      "hash": "a8b88b9c1c7e8c05",
+      "reason": "same-shape: its group is this one scenario instantiated by suite! once per store (factum-conformance::memory, factum-sqlite::conformance), one body and no literal to tabulate; a table over stores runs the same body per store (no CPU saved, test_seconds cannot fall) and hides which store broke; every scenario runs on every store (CLAUDE.md)"
+    },
+    {
+      "suite": "rust",
+      "test": "factum-sqlite::conformance::a_step_whose_runner_dies_at_its_outcome_runs_once",
+      "hash": "8cb8b37212626a93",
+      "reason": "same-shape: its group is this one scenario instantiated by suite! once per store (factum-conformance::memory, factum-sqlite::conformance), one body and no literal to tabulate; a table over stores runs the same body per store (no CPU saved, test_seconds cannot fall) and hides which store broke; every scenario runs on every store (CLAUDE.md)"
+    },
+    {
+      "suite": "rust",
+      "test": "factum-sqlite::conformance::what_failed_together_comes_back_spread_by_its_jitter",
+      "hash": "8d55d758e6dd0e40",
+      "reason": "same-shape: its group is this one scenario instantiated by suite! once per store (factum-conformance::memory, factum-sqlite::conformance), one body and no literal to tabulate; a table over stores runs the same body per store (no CPU saved, test_seconds cannot fall) and hides which store broke; every scenario runs on every store (CLAUDE.md)"
+    },
+    {
+      "suite": "rust",
+      "test": "factum-sqlite::conformance::a_recurring_run_another_runner_recorded_first_runs_once",
+      "hash": "fc1558ede03054ac",
+      "reason": "same-shape: its group is this one scenario instantiated by suite! once per store (factum-conformance::memory, factum-sqlite::conformance), one body and no literal to tabulate; a table over stores runs the same body per store (no CPU saved, test_seconds cannot fall) and hides which store broke; every scenario runs on every store (CLAUDE.md)"
+    },
+    {
+      "suite": "rust",
+      "test": "factum-sqlite::conformance::a_dead_letter_retried_with_fixed_code_is_projected",
+      "hash": "fc56c180b2145c46",
+      "reason": "read: setups conflict: it runs orders with the default on_failure (skip, later events projected past the dead letter), a_stopped_projection_goes_on_once_its_dead_letter_is_retried runs on_failure Stop (projection holds); folding one into the other changes what it checks. Its assertions 'the same code fails again' (retry false, one dead letter left), dead letters empty after the fixed retry, the retried row's total 13, a second retry refused 'unknown', and 'not rebuilt: same version, same tables' map to no assertion of the other"
+    },
+    {
+      "suite": "rust",
+      "test": "factum-sqlite::conformance::a_refused_step_is_compensated",
+      "hash": "e57ca8e92691f037",
+      "reason": "same-shape: its group is this one scenario instantiated by suite! once per store (factum-conformance::memory, factum-sqlite::conformance), one body and no literal to tabulate; a table over stores runs the same body per store (no CPU saved, test_seconds cannot fall) and hides which store broke; every scenario runs on every store (CLAUDE.md)"
+    },
+    {
+      "suite": "rust",
+      "test": "factum-conformance::memory::a_projections_tables_keep_their_rows_apart",
+      "hash": "34b07e49b16b3c16",
+      "reason": "read: another guarantee with its own home (lib.rs): its paid-table assertions need with_paid, and projection_rows_follow_the_log_and_rebuild_the_same's rebuild-and-compare and placed-o2 assertions are asserted nowhere in it; kept on sqlite already (factum#72)"
     }
   ],
   "kept_files": [
