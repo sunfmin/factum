@@ -4,7 +4,7 @@
 
 use std::collections::{BTreeMap, HashMap};
 
-use factum_core::{Event, Instant, Position, StreamId, Uuid, Value, Version, Work, WorkKind};
+use factum_core::{Event, Instant, StreamId, Uuid, Value, Version, Work, WorkKind};
 use factum_store::{Checkpoint, Claim, DeadLetter, Snapshot};
 use serde::{Deserialize, Serialize};
 
@@ -20,22 +20,8 @@ pub struct Row {
 /// A projection's checkpoint and the tables it was last built with.
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct Built {
-    pub version: u32,
-    pub schema: String,
-    pub position: Position,
-    pub stopped: bool,
+    pub checkpoint: Checkpoint,
     pub tables: Vec<String>,
-}
-
-impl Built {
-    pub fn checkpoint(&self) -> Checkpoint {
-        Checkpoint {
-            version: self.version,
-            schema: self.schema.clone(),
-            position: self.position,
-            stopped: self.stopped,
-        }
-    }
 }
 
 /// One change a record carries. Each but `Event` and `Reset` sets one slot

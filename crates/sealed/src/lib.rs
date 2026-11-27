@@ -226,7 +226,7 @@ impl Store for SealedStore {
     }
 
     async fn checkpoint(&self, projection: &str) -> Result<Option<Checkpoint>> {
-        self.read(|s| s.projections.get(projection).map(Built::checkpoint))
+        self.read(|s| s.projections.get(projection).map(|b| b.checkpoint.clone()))
     }
 
     async fn reset_projection(
@@ -242,10 +242,12 @@ impl Store for SealedStore {
                 projection: projection.clone(),
             })?;
             let built = Built {
-                version,
-                schema: schema.to_string(),
-                position: Position::default(),
-                stopped: false,
+                checkpoint: Checkpoint {
+                    version,
+                    schema: schema.to_string(),
+                    position: Position::default(),
+                    stopped: false,
+                },
                 tables: tables.iter().map(|t| t.name.clone()).collect(),
             };
             tx.emit(Op::Projection { projection, built })
@@ -261,7 +263,7 @@ impl Store for SealedStore {
             let dead = s.dead.get(p).map_or(&[][..], Vec::as_slice);
             check_batch(
                 &batch,
-                built.map(|b| (b.version, b.position)),
+                built.map(|b| (b.checkpoint.version, b.checkpoint.position)),
                 |e| Ok(dead.iter().any(|d| d.event == e)),
                 |table| Ok(declared.iter().any(|d| d == table)),
             )?;
@@ -287,8 +289,8 @@ impl Store for SealedStore {
                 })?;
             }
             if let Some(mut built) = tx.state.projections.get(p).cloned() {
-                built.position = batch.to;
-                built.stopped = batch.stop;
+                built.checkpoint.position = batch.to;
+                built.checkpoint.stopped = batch.stop;
                 tx.emit(Op::Projection {
                     projection: p.clone(),
                     built,

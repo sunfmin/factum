@@ -77,7 +77,7 @@ impl Sealed {
         let mut sealed = Sealed {
             path: path.to_path_buf(),
             cipher: XChaCha20Poly1305::new(Key::from_slice(&key)),
-            lockfile: open_file(&lock_path(path))?,
+            lockfile: open_file(&sibling(path, ".lock"))?,
             file: open_file(path)?,
             id: None,
             end: 0,
@@ -121,7 +121,11 @@ impl Sealed {
                 self.id = None;
             }
             let a = done?;
-            self.compact()?;
+            // The commit is synced: a compaction that fails leaves the waste
+            // for the next write to try again, and fails nothing.
+            if let Err(e) = self.compact() {
+                eprintln!("factum-sealed: compaction failed, the file keeps its waste: {e}");
+            }
             Ok(a)
         });
         self.unlock();
@@ -174,9 +178,7 @@ impl Sealed {
         }
         let len = self.len()?;
         if len == 0 {
-            let mut id = [0; 16];
-            OsRng.fill_bytes(&mut id);
-            let header = self.header(id)?;
+            let header = self.header(new_id())?;
             (self.file.write_all(&header))
                 .and_then(|()| self.file.sync_all())
                 .map_err(|e| self.err(e))?;
@@ -215,16 +217,22 @@ impl Sealed {
     }
 
     fn header(&self, id: FileId) -> Result<Vec<u8>> {
+        let check = self.seal(CHECK, &id)?;
+        Ok([&MAGIC[..], &FORMAT.to_le_bytes(), &id, &check].concat())
+    }
+
+    /// A random nonce, then `msg` sealed under it with `aad`.
+    fn seal(&self, msg: &[u8], aad: &[u8]) -> Result<Vec<u8>> {
         let nonce = XChaCha20Poly1305::generate_nonce(&mut OsRng);
-        let check = Payload {
-            msg: CHECK,
-            aad: &id,
-        };
-        let sealed = self
-            .cipher
-            .encrypt(&nonce, check)
-            .map_err(|e| self.err(e))?;
-        Ok([&MAGIC[..], &FORMAT.to_le_bytes(), &id, &nonce, &sealed].concat())
+        let sealed =
+            (self.cipher.encrypt(&nonce, Payload { msg, aad })).map_err(|e| self.err(e))?;
+        Ok([&nonce[..], &sealed].concat())
+    }
+
+    /// The bytes of a record of file `id` holding `ops`, at `index`.
+    fn record(&self, id: FileId, index: u64, ops: &[String]) -> Result<Vec<u8>> {
+        let sealed = self.seal(format!("[{}]", ops.join(",")).as_bytes(), &aad(id, index))?;
+        Ok([&(sealed.len() as u32).to_le_bytes()[..], &sealed].concat())
     }
 
     fn len(&self) -> Result<u64> {
@@ -244,21 +252,19 @@ impl Sealed {
         (self.file.seek(SeekFrom::Start(self.end)))
             .and_then(|_| self.file.read_exact(&mut buf))
             .map_err(|e| self.err(e))?;
-        let mut at = 0;
-        while buf.len() - at >= 4 {
-            let n = u32::from_le_bytes(buf[at..at + 4].try_into().expect("4 bytes")) as usize;
-            let Some(record) = buf.get(at + 4..at + 4 + n) else {
+        let mut rest = &buf[..];
+        while let Some((n, after)) = rest.split_first_chunk::<4>() {
+            let Some((record, after)) = after.split_at_checked(u32::from_le_bytes(*n) as usize)
+            else {
                 break;
             };
-            let last = at + 4 + n == buf.len();
             let ops = match self.unseal(record) {
                 Some(plain) => self.decode(&plain)?,
-                None if last => break,
+                None if after.is_empty() => break,
                 None => {
                     return Err(self.err(format!(
                         "record {} (at byte {}) does not open: the file is damaged",
-                        self.index,
-                        self.end + at as u64
+                        self.index, self.end
                     )));
                 }
             };
@@ -266,20 +272,15 @@ impl Sealed {
                 self.state.apply(op, size);
             }
             self.index += 1;
-            at += 4 + n;
-            self.end += 4 + n as u64;
+            self.end += 4 + record.len() as u64;
+            rest = after;
         }
         Ok(())
     }
 
-    fn aad(&self, index: u64) -> Vec<u8> {
-        let id = self.id.expect("a header read");
-        [&id[..], &index.to_le_bytes()].concat()
-    }
-
     fn unseal(&self, record: &[u8]) -> Option<Vec<u8>> {
         let (nonce, sealed) = record.split_at_checked(NONCE)?;
-        let aad = self.aad(self.index);
+        let aad = aad(self.id?, self.index);
         let payload = Payload {
             msg: sealed,
             aad: &aad,
@@ -296,30 +297,14 @@ impl Sealed {
             .collect()
     }
 
-    /// The bytes of a record holding `ops`, at the next index.
-    fn seal(&self, ops: &[String], index: u64) -> Result<Vec<u8>> {
-        let plain = format!("[{}]", ops.join(","));
-        let nonce = XChaCha20Poly1305::generate_nonce(&mut OsRng);
-        let aad = self.aad(index);
-        let payload = Payload {
-            msg: plain.as_bytes(),
-            aad: &aad,
-        };
-        let sealed = self
-            .cipher
-            .encrypt(&nonce, payload)
-            .map_err(|e| self.err(e))?;
-        let n = (NONCE + sealed.len()) as u32;
-        Ok([&n.to_le_bytes()[..], &nonce, &sealed].concat())
-    }
-
     /// Appends one record and syncs it, cutting off a torn last record
     /// first.
     fn append(&mut self, ops: &[String]) -> Result<()> {
         if ops.is_empty() {
             return Ok(());
         }
-        let record = self.seal(ops, self.index)?;
+        let id = self.id.expect("a header read under the lock");
+        let record = self.record(id, self.index, ops)?;
         if self.len()? != self.end {
             self.file.set_len(self.end).map_err(|e| self.err(e))?;
         }
@@ -342,21 +327,7 @@ impl Sealed {
         if waste <= len / 2 || waste <= MIN_WASTE {
             return Ok(());
         }
-        let mut id = [0; 16];
-        OsRng.fill_bytes(&mut id);
-        let old = self.id.replace(id);
-        let written = self.write_compacted(id);
-        if written.is_err() {
-            self.id = old;
-        }
-        let (file, end, index) = written?;
-        self.file = file;
-        self.end = end;
-        self.index = index;
-        Ok(())
-    }
-
-    fn write_compacted(&self, id: FileId) -> Result<(File, u64, u64)> {
+        let id = new_id();
         let mut out = self.header(id)?;
         let mut index = 0;
         let mut chunk = Vec::new();
@@ -369,25 +340,41 @@ impl Sealed {
                 chunk.push(json);
             }
             if !chunk.is_empty() && (op.is_none() || size >= CHUNK) {
-                out.extend(self.seal(&chunk, index)?);
+                out.extend(self.record(id, index, &chunk)?);
                 index += 1;
                 chunk.clear();
                 size = 0;
             }
         }
-        let tmp = self.path.with_extension("compacting");
+        let tmp = sibling(&self.path, ".compacting");
         let mut file = File::create(&tmp).map_err(|e| self.err(e))?;
         (file.write_all(&out))
             .and_then(|()| file.sync_all())
             .and_then(|()| std::fs::rename(&tmp, &self.path))
             .map_err(|e| self.err(e))?;
-        Ok((open_file(&self.path)?, out.len() as u64, index))
+        self.file = open_file(&self.path)?;
+        self.id = Some(id);
+        self.end = out.len() as u64;
+        self.index = index;
+        Ok(())
     }
 }
 
-fn lock_path(path: &Path) -> PathBuf {
+fn new_id() -> FileId {
+    let mut id = [0; 16];
+    OsRng.fill_bytes(&mut id);
+    id
+}
+
+/// What a record is sealed with: its file and its place in it.
+fn aad(id: FileId, index: u64) -> Vec<u8> {
+    [&id[..], &index.to_le_bytes()].concat()
+}
+
+/// `<path><suffix>`, beside the file.
+fn sibling(path: &Path, suffix: &str) -> PathBuf {
     let mut name = path.as_os_str().to_owned();
-    name.push(".lock");
+    name.push(suffix);
     name.into()
 }
 

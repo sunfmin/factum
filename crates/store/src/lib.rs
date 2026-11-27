@@ -132,7 +132,7 @@ pub struct Snapshot {
     pub state: Value,
 }
 
-#[derive(Clone, Debug, PartialEq)]
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct Checkpoint {
     pub version: u32,
     /// The tables the projection declared when it was built, as JSON: a

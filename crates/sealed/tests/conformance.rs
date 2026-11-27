@@ -8,7 +8,8 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use factum_conformance::Backend;
 use factum_sealed::SealedStore;
 
-pub const KEY: [u8; 32] = [7; 32];
+mod drive;
+use drive::{KEY, claimed_row, event};
 
 static NEXT: AtomicU64 = AtomicU64::new(0);
 
@@ -40,30 +41,9 @@ factum_conformance::suite!(Sealed);
 use std::process::Command;
 
 use factum::{Store, StoreError};
-use factum_core::{
-    By, Event, Instant, Meta, Position, StreamId, Uuid, Version, Work, WorkChange, WorkKind,
-};
-use factum_store::{Append, Claim, Unit};
+use factum_core::{Instant, Position, StreamId, Uuid, Version, WorkKind};
+use factum_store::{Append, Unit};
 use serde_json::json;
-
-fn event(stream: &StreamId, version: u64, data: serde_json::Value) -> Event {
-    Event {
-        id: Uuid::now_v7(),
-        stream: stream.clone(),
-        version: Version(version),
-        kind: "Noted".into(),
-        type_version: 1,
-        data,
-        meta: Meta {
-            now: Instant(0),
-            by: By::Principal("test".into()),
-            key: None,
-            command: "note".into(),
-            fingerprint: None,
-        },
-        position: Position::default(),
-    }
-}
 
 /// Appends one event to `stream`, expected at `version`.
 async fn note(store: &SealedStore, stream: &StreamId, version: u64, data: serde_json::Value) {
@@ -234,24 +214,8 @@ async fn compaction_keeps_every_event_and_the_current_state_and_shrinks_the_file
     let store = SealedStore::open(&path, KEY).unwrap();
     let other = SealedStore::open(&path, KEY).unwrap();
     let s = StreamId::new("note", Uuid::now_v7());
-    let id = Uuid::now_v7();
-    let mut row = Work::new(WorkKind::Task, id, "pack", Instant(0));
-    row.payload = json!({ "pad": "x".repeat(300) });
     note(&store, &s, 0, json!(0)).await;
-    let put = Unit {
-        work: vec![WorkChange::Put(row)],
-        ..Unit::default()
-    };
-    store.commit(put).await.unwrap();
-    let claim = Claim {
-        kind: WorkKind::Task,
-        names: None,
-        now: Instant(0),
-        holder: "a".into(),
-        lease_ms: 1,
-        limit: 1,
-    };
-    let lease = store.claim(claim).await.unwrap()[0].lease.unwrap();
+    let (id, lease) = claimed_row(&store).await;
     // Each renew writes the whole row again, over 300 bytes: 1,000 of them
     // write over 300 KiB the file does not keep.
     let (mut largest, mut last, mut shrank) = (0, 0, 0);

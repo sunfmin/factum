@@ -8,33 +8,14 @@
 
 use std::time::{Duration, Instant as Clock};
 
-use factum_core::{
-    By, Event, Instant, Meta, Position, StreamId, Uuid, Version, Work, WorkChange, WorkKind,
-};
+use factum_core::{Instant, Position, StreamId, Uuid, Version, WorkKind};
 use factum_sealed::SealedStore;
-use factum_store::{Append, Claim, Store, Unit};
+
+#[path = "../tests/drive/mod.rs"]
+mod drive;
+use drive::{KEY, claimed_row, event};
+use factum_store::{Append, Store, Unit};
 use serde_json::json;
-
-const KEY: [u8; 32] = [7; 32];
-
-fn event(stream: &StreamId, version: u64) -> Event {
-    Event {
-        id: Uuid::now_v7(),
-        stream: stream.clone(),
-        version: Version(version),
-        kind: "OrderPlaced".into(),
-        type_version: 1,
-        data: json!({ "order": stream.id, "total": version, "lines": ["tea", "cake"] }),
-        meta: Meta {
-            now: Instant(1_767_225_600_000),
-            by: By::Principal("person:ann".into()),
-            key: Some(Uuid::now_v7()),
-            command: "order.place".into(),
-            fingerprint: Some(Uuid::now_v7()),
-        },
-        position: Position::default(),
-    }
-}
 
 /// Appends `n` events to a new stream, in one commit.
 fn append(n: u64) -> Unit {
@@ -43,7 +24,15 @@ fn append(n: u64) -> Unit {
         appends: vec![Append {
             stream: s.clone(),
             expected: Version(0),
-            events: (1..=n).map(|v| event(&s, v)).collect(),
+            events: (1..=n)
+                .map(|v| {
+                    event(
+                        &s,
+                        v,
+                        json!({ "order": s.id, "total": v, "lines": ["tea", "cake"] }),
+                    )
+                })
+                .collect(),
         }],
         ..Unit::default()
     }
@@ -87,23 +76,7 @@ async fn main() {
     let open = median(opens.collect());
     println!("open of {} bytes: median of 10 {open:?}", size(&path));
 
-    let id = Uuid::now_v7();
-    let mut row = Work::new(WorkKind::Task, id, "pack", Instant(0));
-    row.payload = json!({ "pad": "x".repeat(300) });
-    let put = Unit {
-        work: vec![WorkChange::Put(row)],
-        ..Unit::default()
-    };
-    store.commit(put).await.unwrap();
-    let claim = Claim {
-        kind: WorkKind::Task,
-        names: None,
-        now: Instant(0),
-        holder: "a".into(),
-        lease_ms: 1,
-        limit: 1,
-    };
-    let lease = store.claim(claim).await.unwrap()[0].lease.unwrap();
+    let (id, lease) = claimed_row(&store).await;
     let mut writes = Vec::new();
     for i in 1.. {
         let before = size(&path);
