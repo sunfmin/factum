@@ -561,6 +561,14 @@
       "commits_90d": 18,
       "commits_total": 18,
       "reason": "Still deep, and smaller than at its last keep (746 -> 653 prod lines): the same 8 public calls (submit, plan, state, history, start, process, tick, settle) hide idempotent replay by key and fingerprint, race retry (Races, ADR 0017), snapshots, upcasting, the ending check and dispatch; every event still goes through the one private write()/unit(). The 9 commits since were behaviour changes behind that interface (factum#39-43 runner outcomes and refusals, #70 serialization, #78 doc rehome), not one concept spreading. Tests reach it only through conformance scenarios. What is left is small and internal (process_state, a one-line pass-through over process_events; record's 7 args, used 3 times), not worth a change."
+    },
+    {
+      "suite": "rust",
+      "file": "crates/store/src/lib.rs",
+      "prod_lines": 308,
+      "commits_90d": 15,
+      "commits_total": 15,
+      "reason": "Already deep: it is the Store contract (one trait, one transaction per method) plus the decisions every store must make alike (check_unit, check_batch, apply_op, claim_row/wake_row/release_row, read_answer, table_rows/drop_rows), each a small pure function used by all three stores (memory, sealed, sqlite), as ADR 0010/0011 put them here. Its 90-day churn is rules moving out of the stores into this one home (factum#14, #15, #40, #42, #43, #90), the direction one-home-per-rule wants; no pass-through, no shallow wrapper, no test reaches past it (tests are conformance scenarios only). Splitting it would scatter one contract over files without hiding anything."
     }
   ],
   "measured": {
