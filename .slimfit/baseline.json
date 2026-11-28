@@ -527,6 +527,276 @@
       "test": "factum-conformance::memory::a_projections_tables_keep_their_rows_apart",
       "hash": "34b07e49b16b3c16",
       "reason": "read: another guarantee with its own home (lib.rs): its paid-table assertions need with_paid, and projection_rows_follow_the_log_and_rebuild_the_same's rebuild-and-compare and placed-o2 assertions are asserted nowhere in it; kept on sqlite already (factum#72)"
+    },
+    {
+      "suite": "rust",
+      "test": "factum-sealed::conformance::writers_in_parallel_keep_versions_unique",
+      "hash": "b682428b01c50528",
+      "reason": "Checks versions 1..=100 and total 100 under four writers spawned on a multi-thread runtime. a_writer_that_read_an_old_version_decides_again forces one race through Flaky and checks [1,2] and 11: no assertion there covers free parallel commits, which truefit.toml names this scenario for. The setups conflict (a forced race vs free parallelism)."
+    },
+    {
+      "suite": "rust",
+      "test": "factum-sealed::conformance::a_store_error_reaches_a_worker_as_it_is",
+      "hash": "70325ea13212d646",
+      "reason": "Checks that each failed store call (Claim, Renew, DeadLetters, ...) reaches the worker as Error::Store with that call's error. a_worker_claims_heartbeats_and_finishes_a_task checks the happy path of claim, heartbeat and finish: no assertion there injects a store error, and the flaky per-call loop would change what it checks. No assertion maps; the setups conflict."
+    },
+    {
+      "suite": "rust",
+      "test": "factum-sealed::conformance::a_writer_that_loses_every_race_gives_up",
+      "hash": "7927bd528ae4858c",
+      "reason": "same-shape: its group is this one scenario instantiated by suite! once per store (factum-sealed, factum-conformance::memory, factum-sqlite), one body and no literal to tabulate; a table over stores runs the same body per store (no CPU saved, test_seconds cannot fall) and hides which store broke; every scenario runs on every store (CLAUDE.md)"
+    },
+    {
+      "suite": "rust",
+      "test": "factum-sealed::conformance::two_runners_take_each_step_once",
+      "hash": "2d5d42fb3402a46d",
+      "reason": "Checks five checkouts ticked concurrently by two runners complete, each paid once, with 5 calls and 5 charges. a_call_whose_lease_was_taken_over_is_not_made forces one takeover through Flaky and checks 3 calls: no assertion there checks free concurrent ticks claiming work exclusively. The setups conflict."
+    },
+    {
+      "suite": "rust",
+      "test": "factum-sealed::conformance::what_failed_together_comes_back_spread_by_its_jitter",
+      "hash": "8d55d758e6dd0e40",
+      "reason": "same-shape: its group is this one scenario instantiated by suite! once per store (factum-sealed, factum-conformance::memory, factum-sqlite), one body and no literal to tabulate; a table over stores runs the same body per store (no CPU saved, test_seconds cannot fall) and hides which store broke; every scenario runs on every store (CLAUDE.md)"
+    },
+    {
+      "suite": "rust",
+      "test": "factum-sealed::conformance::work_rows_in_the_stored_shape_still_run",
+      "hash": "f44da5711692348a",
+      "reason": "same-shape: its group is this one scenario instantiated by suite! once per store (factum-sealed, factum-conformance::memory, factum-sqlite), one body and no literal to tabulate; a table over stores runs the same body per store (no CPU saved, test_seconds cannot fall) and hides which store broke; every scenario runs on every store (CLAUDE.md)"
+    },
+    {
+      "suite": "rust",
+      "test": "factum-sqlite::conformance::a_projection_that_writes_an_undeclared_table_fails_the_event",
+      "hash": "0686a17c0d5860b9",
+      "reason": "Checks a write to an undeclared table dead-letters the event (does not declare), keeps the other row and refuses rows of the stray table invalid_query. two_projectors_apply_each_event_once checks a racing batch applies nothing: no assertion maps."
+    },
+    {
+      "suite": "rust",
+      "test": "factum-sqlite::conformance::a_projection_skips_an_event_it_fails_on",
+      "hash": "8d87493b6635db67",
+      "reason": "Checks the good order's row is projected and the dead letter names the bad order's event. two_projectors_apply_each_event_once checks only counts (1 row, 1 dead letter) under a race: folding these into it puts the skip guarantee's home inside a race scenario (lib.rs: one scenario per guarantee) and hides which behaviour failed."
+    },
+    {
+      "suite": "rust",
+      "test": "factum-sealed::conformance::a_call_that_fails_for_now_is_tried_again_then_given_up",
+      "hash": "2701002fe8af2bcb",
+      "reason": "Checks the retry backoff (no call at 999ms, one at 1000ms, the tick counting it), completion on the third call, and a third busy answer ending Failed(busy) with the order placed. a_retry_whose_lease_ran_out_meanwhile_changes_nothing checks that a release under a lost lease makes nothing due: no backoff, tick-count or give-up assertion maps."
+    },
+    {
+      "suite": "rust",
+      "test": "factum-sealed::conformance::a_recurring_run_whose_runner_dies_at_its_outcome_runs_once_per_period",
+      "hash": "e303309be266a82d",
+      "reason": "Checks a recurring run crashed at its outcome records RecurringRan once per period for each OUTCOMES row and pays as the row says. a_schedule_whose_runner_dies_at_its_outcome_runs_once checks ScheduleRan on a schedule stream: recurring keys and streams are another mechanism, no assertion maps."
+    },
+    {
+      "suite": "rust",
+      "test": "factum-sqlite::conformance::a_key_another_writer_answered_first_elsewhere_is_reused",
+      "hash": "bb85c00c3fedfa3b",
+      "reason": "same-shape: its group is this one scenario instantiated by suite! once per store (factum-sealed, factum-conformance::memory, factum-sqlite), one body and no literal to tabulate; a table over stores runs the same body per store (no CPU saved, test_seconds cannot fall) and hides which store broke; every scenario runs on every store (CLAUDE.md)"
+    },
+    {
+      "suite": "rust",
+      "test": "factum-sealed::conformance::a_call_whose_lease_was_taken_over_is_not_made",
+      "hash": "1f12cafc7c2cd86a",
+      "reason": "Checks a does not make its second claimed call once b took its lease (3 calls) and both checkouts pay once. a_runner_that_dies_loses_its_process_to_another checks an advance lease held then taken over: no call-count or two-checkout assertion maps."
+    },
+    {
+      "suite": "rust",
+      "test": "factum-sealed::conformance::a_step_whose_runner_dies_at_its_outcome_runs_once",
+      "hash": "8cb8b37212626a93",
+      "reason": "same-shape: its group is this one scenario instantiated by suite! once per store (factum-sealed, factum-conformance::memory, factum-sqlite), one body and no literal to tabulate; a table over stores runs the same body per store (no CPU saved, test_seconds cannot fall) and hides which store broke; every scenario runs on every store (CLAUDE.md)"
+    },
+    {
+      "suite": "rust",
+      "test": "factum-sealed::conformance::a_call_whose_lease_runs_out_on_every_attempt_ends_unknown",
+      "hash": "16fef66ca540bf43",
+      "reason": "Checks three lost answers make 3 calls and no fourth, the charge ends Unknown(attempt 3 of 3), and checkout finds the charge. a_call_whose_answer_was_lost_is_made_again_and_done_once checks one lost answer then completion with (2 calls, 1 charge): no assertion maps."
+    },
+    {
+      "suite": "rust",
+      "test": "factum-sealed::conformance::a_retry_whose_lease_ran_out_meanwhile_changes_nothing",
+      "hash": "0df4d5d3c1c7ef17",
+      "reason": "Checks a's release under the lease b took leaves 2 calls and the charge due 2s on (3 calls, completed). a_runner_that_dies_loses_its_process_to_another checks an advance lease, not an action's release: no assertion maps."
+    },
+    {
+      "suite": "rust",
+      "test": "factum-sqlite::conformance::a_writer_that_read_an_old_version_decides_again",
+      "hash": "d95bc58be5d2adb3",
+      "reason": "same-shape: its group is this one scenario instantiated by suite! once per store (factum-sealed, factum-conformance::memory, factum-sqlite), one body and no literal to tabulate; a table over stores runs the same body per store (no CPU saved, test_seconds cannot fall) and hides which store broke; every scenario runs on every store (CLAUDE.md)"
+    },
+    {
+      "suite": "rust",
+      "test": "factum-sealed::conformance::tasks_with_one_ordering_key_run_one_at_a_time_paced",
+      "hash": "77f762463d5dbdf2",
+      "reason": "Checks tokyo's first and osaka's task run side by side in order (o1, o3), tokyo's second waits while the first is held, then is paced 10s. a_crash_between_a_tasks_answer_and_its_pace_loses_no_pace checks one key's pace survives a crash: the other key and the claim order map nowhere there, and folding them into the crash scenario puts two guarantees in one home (lib.rs)."
+    },
+    {
+      "suite": "rust",
+      "test": "factum-sealed::conformance::a_call_whose_answer_was_lost_is_made_again_and_done_once",
+      "hash": "2da0b1e4f8c7f7e0",
+      "reason": "Checks a's delivery holds its lease until the call's timeout (1 call), then b makes the call again: 2 calls, 1 charge, completed, paid. a_runner_that_dies_loses_its_process_to_another checks an advance lease: no call or charge assertion maps."
+    },
+    {
+      "suite": "rust",
+      "test": "factum-sealed::conformance::starting_a_process_again",
+      "hash": "9437bc67c73b8e59",
+      "reason": "Checks that starting a process again with the same key and other input is refused key_reused, and after it ends is refused ended, with the call made once. a_process_runs_to_completion checks only completion, status paid and one charge under the step's key: none of its assertions checks a second start. Folding them would put two guarantees in one scenario (lib.rs) and hide which failed."
+    },
+    {
+      "suite": "rust",
+      "test": "factum-sealed::conformance::a_runner_that_dies_loses_its_process_to_another",
+      "hash": "bd1619da1eaa9837",
+      "reason": "Checks nobody advances a process while the dead runner's advance lease holds (pending none), then b completes it after advance_lease_ms. a_process_runs_to_completion has no crash and no lease: no assertion maps."
+    },
+    {
+      "suite": "rust",
+      "test": "factum-sealed::conformance::a_wait_for_an_event_recorded_while_it_is_requested_ends",
+      "hash": "e78e2f2b39de427f",
+      "reason": "same-shape: its group is this one scenario instantiated by suite! once per store (factum-sealed, factum-conformance::memory, factum-sqlite), one body and no literal to tabulate; a table over stores runs the same body per store (no CPU saved, test_seconds cannot fall) and hides which store broke; every scenario runs on every store (CLAUDE.md)"
+    },
+    {
+      "suite": "rust",
+      "test": "factum-sealed::conformance::a_recurring_run_another_runner_recorded_first_runs_once",
+      "hash": "fc1558ede03054ac",
+      "reason": "same-shape: its group is this one scenario instantiated by suite! once per store (factum-sealed, factum-conformance::memory, factum-sqlite), one body and no literal to tabulate; a table over stores runs the same body per store (no CPU saved, test_seconds cannot fall) and hides which store broke; every scenario runs on every store (CLAUDE.md)"
+    },
+    {
+      "suite": "rust",
+      "test": "factum-sealed::conformance::a_process_runs_to_completion",
+      "hash": "b33a8fcc26c9488c",
+      "reason": "Checks a plain checkout completes, paid, with (1 call, 1 charge) and the charge made under step_key(p, charge). a_call_whose_answer_was_lost_is_made_again_and_done_once asserts (2, 1) after a crash and never the step's key, which is asserted only here."
+    },
+    {
+      "suite": "rust",
+      "test": "factum-sealed::conformance::a_wait_ends_when_its_event_arrives",
+      "hash": "55197ef1858cf003",
+      "reason": "Checks the pickup waits on closed and completes with the closing event's id. work_rows_in_the_stored_shape_still_run rewrites the wait's row to the old stored shape and checks only Completed(_): the event-id outcome maps nowhere, and folding the current-shape path into it changes what it checks."
+    },
+    {
+      "suite": "rust",
+      "test": "factum-sealed::conformance::a_wait_times_out",
+      "hash": "3b6fe8c39876b65a",
+      "reason": "same-shape: its group is this one scenario instantiated by suite! once per store (factum-sealed, factum-conformance::memory, factum-sqlite), one body and no literal to tabulate; a table over stores runs the same body per store (no CPU saved, test_seconds cannot fall) and hides which store broke; every scenario runs on every store (CLAUDE.md)"
+    },
+    {
+      "suite": "rust",
+      "test": "factum-sealed::conformance::a_task_whose_lease_ran_out_is_taken_over",
+      "hash": "4122c0e973065d1b",
+      "reason": "Checks that a lease run out is not renewed (lease_lost), the next claim is attempt 2 and reads taken_over, and the first holder can neither heartbeat nor finish while the second completes the step. a_worker_claims_heartbeats_and_finishes_a_task checks the happy path: no assertion maps."
+    },
+    {
+      "suite": "rust",
+      "test": "factum-sealed::conformance::a_failed_attempt_is_tried_again",
+      "hash": "29ebafbed9461736",
+      "reason": "same-shape: its group is this one scenario instantiated by suite! once per store (factum-sealed, factum-conformance::memory, factum-sqlite), one body and no literal to tabulate; a table over stores runs the same body per store (no CPU saved, test_seconds cannot fall) and hides which store broke; every scenario runs on every store (CLAUDE.md)"
+    },
+    {
+      "suite": "rust",
+      "test": "factum-sealed::conformance::a_wake_while_a_runner_holds_the_process_is_not_lost",
+      "hash": "5613834e3f2fb1f1",
+      "reason": "same-shape: its group is this one scenario instantiated by suite! once per store (factum-sealed, factum-conformance::memory, factum-sqlite), one body and no literal to tabulate; a table over stores runs the same body per store (no CPU saved, test_seconds cannot fall) and hides which store broke; every scenario runs on every store (CLAUDE.md)"
+    },
+    {
+      "suite": "rust",
+      "test": "factum-sealed::conformance::a_refusal_that_loses_its_key_answers_what_the_key_holds",
+      "hash": "95a5a57d43dcdd9c",
+      "reason": "Checks a refused recurring run that loses its key to a rival pay keeps the rival's Applied answer, one OrderPaid and RecurringRan with ok true. a_recurring_run_another_runner_recorded_first_runs_once races another runner recording the period, not a rival on the key: the Applied-answer and ok assertions map nowhere."
+    },
+    {
+      "suite": "rust",
+      "test": "factum-sealed::conformance::a_wait_for_an_event_already_recorded_ends_at_once",
+      "hash": "29ec9a5825a17bd0",
+      "reason": "same-shape: its group is this one scenario instantiated by suite! once per store (factum-sealed, factum-conformance::memory, factum-sqlite), one body and no literal to tabulate; a table over stores runs the same body per store (no CPU saved, test_seconds cannot fall) and hides which store broke; every scenario runs on every store (CLAUDE.md)"
+    },
+    {
+      "suite": "rust",
+      "test": "factum-sealed::conformance::queries_filter_and_order_by_declared_columns",
+      "hash": "61180ddfe5ed3422",
+      "reason": "same-shape: its group is this one scenario instantiated by suite! once per store (factum-sealed, factum-conformance::memory, factum-sqlite), one body and no literal to tabulate; a table over stores runs the same body per store (no CPU saved, test_seconds cannot fall) and hides which store broke; every scenario runs on every store (CLAUDE.md)"
+    },
+    {
+      "suite": "rust",
+      "test": "factum-sealed::conformance::a_cancelled_task_ends_its_step_cancelled",
+      "hash": "bcf2b87488c4ead7",
+      "reason": "same-shape: its group is this one scenario instantiated by suite! once per store (factum-sealed, factum-conformance::memory, factum-sqlite), one body and no literal to tabulate; a table over stores runs the same body per store (no CPU saved, test_seconds cannot fall) and hides which store broke; every scenario runs on every store (CLAUDE.md)"
+    },
+    {
+      "suite": "rust",
+      "test": "factum-sealed::conformance::a_process_that_faults_stops_no_other",
+      "hash": "095e170849c8420a",
+      "reason": "same-shape: its group is this one scenario instantiated by suite! once per store (factum-sealed, factum-conformance::memory, factum-sqlite), one body and no literal to tabulate; a table over stores runs the same body per store (no CPU saved, test_seconds cannot fall) and hides which store broke; every scenario runs on every store (CLAUDE.md)"
+    },
+    {
+      "suite": "rust",
+      "test": "factum-sealed::conformance::a_refused_step_is_compensated",
+      "hash": "e57ca8e92691f037",
+      "reason": "same-shape: its group is this one scenario instantiated by suite! once per store (factum-sealed, factum-conformance::memory, factum-sqlite), one body and no literal to tabulate; a table over stores runs the same body per store (no CPU saved, test_seconds cannot fall) and hides which store broke; every scenario runs on every store (CLAUDE.md)"
+    },
+    {
+      "suite": "rust",
+      "test": "factum-sealed::conformance::a_result_whose_lease_ran_out_meanwhile_is_refused",
+      "hash": "2f45589c8d1f0f95",
+      "reason": "same-shape: its group is this one scenario instantiated by suite! once per store (factum-sealed, factum-conformance::memory, factum-sqlite), one body and no literal to tabulate; a table over stores runs the same body per store (no CPU saved, test_seconds cannot fall) and hides which store broke; every scenario runs on every store (CLAUDE.md)"
+    },
+    {
+      "suite": "rust",
+      "test": "factum-sealed::conformance::one_tick_catches_a_projection_up_batch_by_batch",
+      "hash": "2df831239f2341ae",
+      "reason": "same-shape: its group is this one scenario instantiated by suite! once per store (factum-sealed, factum-conformance::memory, factum-sqlite), one body and no literal to tabulate; a table over stores runs the same body per store (no CPU saved, test_seconds cannot fall) and hides which store broke; every scenario runs on every store (CLAUDE.md)"
+    },
+    {
+      "suite": "rust",
+      "test": "factum-sealed::conformance::two_projectors_apply_each_event_once",
+      "hash": "703a9f5e901f056d",
+      "reason": "same-shape: its group is this one scenario instantiated by suite! once per store (factum-sealed, factum-conformance::memory, factum-sqlite), one body and no literal to tabulate; a table over stores runs the same body per store (no CPU saved, test_seconds cannot fall) and hides which store broke; every scenario runs on every store (CLAUDE.md)"
+    },
+    {
+      "suite": "rust",
+      "test": "factum-sealed::conformance::a_scheduled_command_runs_once_when_due",
+      "hash": "a112acb2af3bc3ab",
+      "reason": "same-shape: its group is this one scenario instantiated by suite! once per store (factum-sealed, factum-conformance::memory, factum-sqlite), one body and no literal to tabulate; a table over stores runs the same body per store (no CPU saved, test_seconds cannot fall) and hides which store broke; every scenario runs on every store (CLAUDE.md)"
+    },
+    {
+      "suite": "rust",
+      "test": "factum-sealed::conformance::an_at_most_once_task_whose_lease_ran_out_ends_unknown",
+      "hash": "1de42181511ffd20",
+      "reason": "same-shape: its group is this one scenario instantiated by suite! once per store (factum-sealed, factum-conformance::memory, factum-sqlite), one body and no literal to tabulate; a table over stores runs the same body per store (no CPU saved, test_seconds cannot fall) and hides which store broke; every scenario runs on every store (CLAUDE.md)"
+    },
+    {
+      "suite": "rust",
+      "test": "factum-sealed::conformance::a_process_starts_once_on_the_event_it_starts_on",
+      "hash": "37cd58e449ebf217",
+      "reason": "Checks the fulfil process two runners settle starts once: named fulfil, input OrderPaid, one pack task. a_result_whose_lease_ran_out_meanwhile_is_refused checks a late result refused lease_lost: no start assertion maps."
+    },
+    {
+      "suite": "rust",
+      "test": "factum-sealed::conformance::a_projections_tables_keep_their_rows_apart",
+      "hash": "34b07e49b16b3c16",
+      "reason": "Its paid-table assertions need with_paid and check that the same key in another table is another row; projection_rows_follow_the_log_and_rebuild_the_same checks rebuild-and-compare, asserted nowhere here. Two guarantees, as kept on memory and sqlite (factum#72, #81)."
+    },
+    {
+      "suite": "rust",
+      "test": "factum-sealed::conformance::a_read_never_serves_rows_another_version_built",
+      "hash": "86f11ba1c4d067b9",
+      "reason": "same-shape: its group is this one scenario instantiated by suite! once per store (factum-sealed, factum-conformance::memory, factum-sqlite), one body and no literal to tabulate; a table over stores runs the same body per store (no CPU saved, test_seconds cannot fall) and hides which store broke; every scenario runs on every store (CLAUDE.md)"
+    },
+    {
+      "suite": "rust",
+      "test": "factum-sealed::conformance::a_change_to_a_projections_tables_rebuilds_it",
+      "hash": "d71e6bf7b605320b",
+      "reason": "Checks the same projection version with other tables (with_customer) rebuilds: the dead-lettered row is projected and dead letters are empty. a_dead_letter_another_version_left_is_not_retried rebuilds on version 2: same version, other tables maps nowhere."
+    },
+    {
+      "suite": "rust",
+      "test": "factum-sealed::conformance::code_that_hands_values_that_do_not_serialize_is_told_why",
+      "hash": "ff7c0d4420460391",
+      "reason": "same-shape: its group is this one scenario instantiated by suite! once per store (factum-sealed, factum-conformance::memory, factum-sqlite), one body and no literal to tabulate; a table over stores runs the same body per store (no CPU saved, test_seconds cannot fall) and hides which store broke; every scenario runs on every store (CLAUDE.md)"
+    },
+    {
+      "suite": "rust",
+      "test": "factum-sealed::conformance::old_events_are_read_in_their_current_shape",
+      "hash": "c4f17751be13a530",
+      "reason": "same-shape: its group is this one scenario instantiated by suite! once per store (factum-sealed, factum-conformance::memory, factum-sqlite), one body and no literal to tabulate; a table over stores runs the same body per store (no CPU saved, test_seconds cannot fall) and hides which store broke; every scenario runs on every store (CLAUDE.md)"
     }
   ],
   "kept_files": [
