@@ -337,3 +337,51 @@ async fn a_file_of_a_newer_format_is_refused_at_open() {
         Ok(_) => panic!("a newer format was opened"),
     }
 }
+
+/// The mode of each file in `path`'s directory named after it.
+#[cfg(unix)]
+fn modes(path: &std::path::Path) -> Vec<(String, u32)> {
+    use std::os::unix::fs::PermissionsExt;
+    let name = path.file_name().unwrap().to_str().unwrap();
+    let mut modes: Vec<_> = std::fs::read_dir(path.parent().unwrap())
+        .unwrap()
+        .map(|e| e.unwrap())
+        .filter(|e| e.file_name().to_str().unwrap().starts_with(name))
+        .map(|e| {
+            let mode = e.metadata().unwrap().permissions().mode() & 0o777;
+            (e.file_name().into_string().unwrap(), mode)
+        })
+        .collect();
+    modes.sort();
+    modes
+}
+
+#[cfg(unix)]
+#[tokio::test]
+async fn its_files_are_owner_only_made_tightened_and_compacted() {
+    use std::os::unix::fs::PermissionsExt;
+    let path = new_path();
+    let name = path.file_name().unwrap().to_str().unwrap().to_string();
+    let want = vec![(name.clone(), 0o600), (format!("{name}.lock"), 0o600)];
+    let store = SealedStore::open(&path, KEY).unwrap();
+    let (id, lease) = claimed_row(&store).await;
+    assert_eq!(modes(&path), want, "made");
+    drop(store);
+    for (file, _) in &want {
+        let wide = std::fs::Permissions::from_mode(0o644);
+        std::fs::set_permissions(path.with_file_name(file), wide).unwrap();
+    }
+    let store = SealedStore::open(&path, KEY).unwrap();
+    assert_eq!(modes(&path), want, "tightened at open");
+    let mut last = 0;
+    for i in 1.. {
+        let renewed = store.renew(WorkKind::Task, id, lease, Instant(0), Instant(i));
+        assert!(renewed.await.unwrap());
+        let size = std::fs::metadata(&path).unwrap().len();
+        if size < last {
+            break;
+        }
+        last = size;
+    }
+    assert_eq!(modes(&path), want, "compacted");
+}

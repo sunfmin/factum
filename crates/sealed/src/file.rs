@@ -347,7 +347,8 @@ impl Sealed {
             }
         }
         let tmp = sibling(&self.path, ".compacting");
-        let mut file = File::create(&tmp).map_err(|e| self.err(e))?;
+        let mut file = owner_only(&tmp, OpenOptions::new().write(true).truncate(true))
+            .map_err(|e| self.err(e))?;
         (file.write_all(&out))
             .and_then(|()| file.sync_all())
             .and_then(|()| std::fs::rename(&tmp, &self.path))
@@ -379,8 +380,24 @@ fn sibling(path: &Path, suffix: &str) -> PathBuf {
 }
 
 fn open_file(path: &Path) -> Result<File> {
-    (OpenOptions::new().read(true).write(true).create(true))
-        .truncate(false)
-        .open(path)
+    owner_only(path, OpenOptions::new().read(true).write(true))
         .map_err(|e| StoreError::Backend(format!("{}: {e}", path.display())))
+}
+
+/// Opens `path` with `options`, creating it if missing: owner-only (0600
+/// on Unix) if new, and tightened to that if it was left wider.
+/// On Windows it keeps the access it inherits.
+fn owner_only(path: &Path, options: &mut OpenOptions) -> std::io::Result<File> {
+    options.create(true);
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::{OpenOptionsExt, PermissionsExt};
+        let file = options.mode(0o600).open(path)?;
+        if file.metadata()?.permissions().mode() & 0o077 != 0 {
+            file.set_permissions(std::fs::Permissions::from_mode(0o600))?;
+        }
+        Ok(file)
+    }
+    #[cfg(not(unix))]
+    options.open(path)
 }
