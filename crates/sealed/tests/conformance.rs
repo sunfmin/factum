@@ -214,23 +214,23 @@ async fn compaction_keeps_every_event_and_the_current_state_and_shrinks_the_file
     let store = SealedStore::open(&path, KEY).unwrap();
     let other = SealedStore::open(&path, KEY).unwrap();
     let s = StreamId::new("note", Uuid::now_v7());
-    // 200 KB the file keeps, so a compaction waits for as much waste.
-    let mut events: Vec<_> = (0..20)
-        .map(|i| json!({ "n": i, "pad": "x".repeat(10_000) }))
+    // 70 KB the file keeps, so a compaction waits for as much waste.
+    let mut events: Vec<_> = (0..10)
+        .map(|i| json!({ "n": i, "pad": "x".repeat(7_000) }))
         .collect();
     for (i, data) in events.iter().enumerate() {
         note(&store, &s, i as u64, data.clone()).await;
     }
-    let (id, lease) = claimed_row(&store).await;
-    // Each renew writes the whole row again, over 300 bytes: 1,000 of them
-    // write over 300 KiB the file does not keep.
+    let (id, lease) = claimed_row(&store, 3_000).await;
+    // Each renew writes the whole row again, over 3 KB: 100 of them write
+    // over 300 KB the file does not keep.
     let (mut largest, mut last, mut shrank) = (0, 0, 0);
-    for i in 1..=1000 {
+    for i in 1..=100 {
         let renewed = store.renew(WorkKind::Task, id, lease, Instant(0), Instant(i));
         assert!(renewed.await.unwrap());
-        if i % 100 == 0 {
+        if i % 10 == 0 {
             events.push(json!(i));
-            note(&other, &s, 19 + i as u64 / 100, json!(i)).await;
+            note(&other, &s, 9 + i as u64 / 10, json!(i)).await;
         }
         let size = std::fs::metadata(&path).unwrap().len();
         if size < last {
@@ -243,12 +243,12 @@ async fn compaction_keeps_every_event_and_the_current_state_and_shrinks_the_file
         (largest, last) = (largest.max(size), size);
     }
     assert!(shrank >= 2, "compacted {shrank} times");
-    assert!(largest < 600 * 1024, "the file grew to {largest}");
+    assert!(largest < 200 * 1024, "the file grew to {largest}");
     let fresh = SealedStore::open(&path, KEY).unwrap();
     for handle in [&store, &other, &fresh] {
         assert_eq!(log(handle).await, events);
         let held = handle.work(WorkKind::Task, id).await.unwrap().unwrap();
-        assert_eq!(held.lease_until, Some(Instant(1000)));
+        assert_eq!(held.lease_until, Some(Instant(100)));
     }
 }
 
@@ -364,7 +364,7 @@ async fn its_files_are_owner_only_made_tightened_and_compacted() {
     let name = path.file_name().unwrap().to_str().unwrap().to_string();
     let want = vec![(name.clone(), 0o600), (format!("{name}.lock"), 0o600)];
     let store = SealedStore::open(&path, KEY).unwrap();
-    let (id, lease) = claimed_row(&store).await;
+    let (id, lease) = claimed_row(&store, 300).await;
     assert_eq!(modes(&path), want, "made");
     drop(store);
     for (file, _) in &want {
@@ -510,7 +510,7 @@ async fn its_files_are_owner_only_made_tightened_and_compacted_on_windows() {
     let acl = "P(A;;FA;;;OWNER)(A;;FA;;;SY)(A;;FA;;;BA)".to_string();
     let want = vec![(name.clone(), acl.clone()), (format!("{name}.lock"), acl)];
     let store = SealedStore::open(&path, KEY).unwrap();
-    let (id, lease) = claimed_row(&store).await;
+    let (id, lease) = claimed_row(&store, 300).await;
     assert_eq!(acls(&path), want, "made");
     drop(store);
     for (file, _) in &want {

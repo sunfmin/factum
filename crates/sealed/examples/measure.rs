@@ -77,7 +77,7 @@ async fn main() {
     let open = median(opens.collect());
     println!("open of {} bytes: median of 10 {open:?}", size(&path));
 
-    let (id, lease) = claimed_row(&store).await;
+    let (id, lease) = claimed_row(&store, 300).await;
     let mut writes = Vec::new();
     for i in 1.. {
         let before = size(&path);

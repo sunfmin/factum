@@ -28,12 +28,12 @@ pub fn event(stream: &StreamId, version: u64, data: Value) -> Event {
     }
 }
 
-/// A task row of over 300 bytes, put and claimed: its id and its lease.
+/// A task row of over `pad` bytes, put and claimed: its id and its lease.
 /// Each renew of it writes the row again, all waste but the last.
-pub async fn claimed_row(store: &SealedStore) -> (Uuid, Uuid) {
+pub async fn claimed_row(store: &SealedStore, pad: usize) -> (Uuid, Uuid) {
     let id = Uuid::now_v7();
     let mut row = Work::new(WorkKind::Task, id, "pack", Instant(0));
-    row.payload = json!({ "pad": "x".repeat(300) });
+    row.payload = json!({ "pad": "x".repeat(pad) });
     let put = Unit {
         work: vec![WorkChange::Put(row)],
         ..Unit::default()
