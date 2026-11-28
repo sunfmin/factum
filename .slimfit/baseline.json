@@ -2,8 +2,8 @@
   "suites": {
     "rust": {
       "prod_lines": 5632,
-      "test_lines": 5343,
-      "tests": 258,
+      "test_lines": 5351,
+      "tests": 246,
       "failures": 0,
       "test_seconds": 2.64,
       "covered_lines": 3655,
@@ -137,12 +137,6 @@
     },
     {
       "suite": "rust",
-      "test": "factum-sqlite::conformance::versions_stay_unique_under_two_writers",
-      "hash": "1e32d63c1886ed09",
-      "reason": "Its same-shape group is not two tests that differ by literals: it is scenarios::versions_stay_unique_under_two_writers instantiated by suite! once per store (factum-conformance::memory, factum-sqlite::conformance), one body and no literal to tabulate. A table over stores would need one crate to depend on both stores, would run the same body per store (no CPU saved), and would hide which store broke; every scenario runs on every store (CLAUDE.md). Its other_test, a_writer_that_read_an_old_version_decides_again, is another guarantee with its own home in scenarios.rs (lib.rs: one scenario per guarantee); they share the world setup, not their assertions."
-    },
-    {
-      "suite": "rust",
       "test": "factum-sqlite::conformance::a_cancelled_task_ends_its_step_cancelled",
       "hash": "bcf2b87488c4ead7",
       "reason": "Its same-shape group is not two tests that differ by literals: it is scenarios::a_cancelled_task_ends_its_step_cancelled instantiated by suite! once per store (factum-conformance::memory, factum-sqlite::conformance), one body and no literal to tabulate. A table over stores would need one crate to depend on both stores, would run the same body per store (no CPU saved), and would hide which store broke; every scenario runs on every store (CLAUDE.md). Its other_test is the same scenario on the other store."
@@ -239,12 +233,6 @@
     },
     {
       "suite": "rust",
-      "test": "factum-sqlite::conformance::an_ended_stream_refuses_every_command",
-      "hash": "1fa058eeafa133a4",
-      "reason": "Its same-shape group is not two tests that differ by literals: it is scenarios::an_ended_stream_refuses_every_command instantiated by suite! once per store (factum-conformance::memory, factum-sqlite::conformance), one body and no literal to tabulate. A table over stores would need one crate to depend on both stores, would run the same body per store (no CPU saved), and would hide which store broke; every scenario runs on every store (CLAUDE.md). Its other_test, a_stream_ended_by_a_scheduling_command_stays_ended, is another guarantee with its own home in scenarios.rs (lib.rs: one scenario per guarantee); they share the world setup, not their assertions."
-    },
-    {
-      "suite": "rust",
       "test": "factum-conformance::memory::two_runners_take_each_step_once",
       "hash": "2d5d42fb3402a46d",
       "reason": "Its same-shape group is not two tests that differ by literals: it is scenarios::two_runners_take_each_step_once instantiated by suite! once per store (factum-conformance::memory, factum-sqlite::conformance), one body and no literal to tabulate. A table over stores would need one crate to depend on both stores, would run the same body per store (no CPU saved), and would hide which store broke; every scenario runs on every store (CLAUDE.md). Its other_test, runners_in_parallel_do_each_thing_once, is another guarantee with its own home in scenarios.rs (lib.rs: one scenario per guarantee); they share the world setup, not their assertions."
@@ -272,12 +260,6 @@
       "test": "factum-conformance::memory::work_rows_in_the_stored_shape_still_run",
       "hash": "f44da5711692348a",
       "reason": "Its same-shape group is not two tests that differ by literals: it is scenarios::work_rows_in_the_stored_shape_still_run instantiated by suite! once per store (factum-conformance::memory, factum-sqlite::conformance), one body and no literal to tabulate. A table over stores would need one crate to depend on both stores, would run the same body per store (no CPU saved), and would hide which store broke; every scenario runs on every store (CLAUDE.md). Its other_test, a_retry_whose_lease_ran_out_meanwhile_changes_nothing, is another guarantee with its own home in scenarios.rs (lib.rs: one scenario per guarantee); they share the world setup, not their assertions."
-    },
-    {
-      "suite": "rust",
-      "test": "factum-conformance::memory::versions_stay_unique_under_two_writers",
-      "hash": "1e32d63c1886ed09",
-      "reason": "Its same-shape group is not two tests that differ by literals: it is scenarios::versions_stay_unique_under_two_writers instantiated by suite! once per store (factum-conformance::memory, factum-sqlite::conformance), one body and no literal to tabulate. A table over stores would need one crate to depend on both stores, would run the same body per store (no CPU saved), and would hide which store broke; every scenario runs on every store (CLAUDE.md). Its other_test, a_writer_that_read_an_old_version_decides_again, is another guarantee with its own home in scenarios.rs (lib.rs: one scenario per guarantee); they share the world setup, not their assertions."
     },
     {
       "suite": "rust",
@@ -353,26 +335,8 @@
     },
     {
       "suite": "rust",
-      "test": "factum-conformance::memory::an_ended_stream_refuses_every_command",
-      "hash": "1fa058eeafa133a4",
-      "reason": "Its same-shape group is not two tests that differ by literals: it is scenarios::an_ended_stream_refuses_every_command instantiated by suite! once per store (factum-conformance::memory, factum-sqlite::conformance), one body and no literal to tabulate. A table over stores would need one crate to depend on both stores, would run the same body per store (no CPU saved), and would hide which store broke; every scenario runs on every store (CLAUDE.md). Its other_test, a_stream_ended_by_a_scheduling_command_stays_ended, is another guarantee with its own home in scenarios.rs (lib.rs: one scenario per guarantee); they share the world setup, not their assertions."
-    },
-    {
-      "suite": "rust",
       "test": "factum-sqlite::conformance::a_recurring_run_whose_runner_dies_at_its_outcome_runs_once_per_period",
       "hash": "e303309be266a82d",
-      "reason": "Its same-shape group is not two tests that differ by literals: it is one scenario of scenarios.rs instantiated by suite! once per store (factum-conformance::memory, factum-sqlite::conformance), one body and no literal to tabulate. A table over stores would need one crate to depend on both stores, would run the same body per store (no CPU saved, so test_seconds could not fall), and would hide which store broke; every scenario runs on every store (CLAUDE.md). Its other_test is another guarantee with its own home in scenarios.rs (lib.rs: one scenario per guarantee), or the same scenario on the other store; they share world setup, not assertions."
-    },
-    {
-      "suite": "rust",
-      "test": "factum-sqlite::conformance::a_refused_recurring_command_runs_once_per_period",
-      "hash": "aa5614ead03fd4e5",
-      "reason": "Its same-shape group is not two tests that differ by literals: it is one scenario of scenarios.rs instantiated by suite! once per store (factum-conformance::memory, factum-sqlite::conformance), one body and no literal to tabulate. A table over stores would need one crate to depend on both stores, would run the same body per store (no CPU saved, so test_seconds could not fall), and would hide which store broke; every scenario runs on every store (CLAUDE.md). Its other_test is another guarantee with its own home in scenarios.rs (lib.rs: one scenario per guarantee), or the same scenario on the other store; they share world setup, not assertions."
-    },
-    {
-      "suite": "rust",
-      "test": "factum-sqlite::conformance::a_recurring_command_that_writes_nothing_runs_once_per_period",
-      "hash": "bc06390329069d4e",
       "reason": "Its same-shape group is not two tests that differ by literals: it is one scenario of scenarios.rs instantiated by suite! once per store (factum-conformance::memory, factum-sqlite::conformance), one body and no literal to tabulate. A table over stores would need one crate to depend on both stores, would run the same body per store (no CPU saved, so test_seconds could not fall), and would hide which store broke; every scenario runs on every store (CLAUDE.md). Its other_test is another guarantee with its own home in scenarios.rs (lib.rs: one scenario per guarantee), or the same scenario on the other store; they share world setup, not assertions."
     },
     {
@@ -383,38 +347,14 @@
     },
     {
       "suite": "rust",
-      "test": "factum-sqlite::conformance::an_answer_with_no_events_keeps_nothing_and_a_resend_decides_again",
-      "hash": "328c067214cee72c",
-      "reason": "Its same-shape group is not two tests that differ by literals: it is one scenario of scenarios.rs instantiated by suite! once per store (factum-conformance::memory, factum-sqlite::conformance), one body and no literal to tabulate. A table over stores would need one crate to depend on both stores, would run the same body per store (no CPU saved, so test_seconds could not fall), and would hide which store broke; every scenario runs on every store (CLAUDE.md). Its other_test is another guarantee with its own home in scenarios.rs (lib.rs: one scenario per guarantee), or the same scenario on the other store; they share world setup, not assertions."
-    },
-    {
-      "suite": "rust",
       "test": "factum-conformance::memory::a_recurring_run_whose_runner_dies_at_its_outcome_runs_once_per_period",
       "hash": "e303309be266a82d",
       "reason": "Its same-shape group is not two tests that differ by literals: it is one scenario of scenarios.rs instantiated by suite! once per store (factum-conformance::memory, factum-sqlite::conformance), one body and no literal to tabulate. A table over stores would need one crate to depend on both stores, would run the same body per store (no CPU saved, so test_seconds could not fall), and would hide which store broke; every scenario runs on every store (CLAUDE.md). Its other_test is another guarantee with its own home in scenarios.rs (lib.rs: one scenario per guarantee), or the same scenario on the other store; they share world setup, not assertions."
     },
     {
       "suite": "rust",
-      "test": "factum-conformance::memory::a_recurring_command_that_writes_nothing_runs_once_per_period",
-      "hash": "bc06390329069d4e",
-      "reason": "Its same-shape group is not two tests that differ by literals: it is one scenario of scenarios.rs instantiated by suite! once per store (factum-conformance::memory, factum-sqlite::conformance), one body and no literal to tabulate. A table over stores would need one crate to depend on both stores, would run the same body per store (no CPU saved, so test_seconds could not fall), and would hide which store broke; every scenario runs on every store (CLAUDE.md). Its other_test is another guarantee with its own home in scenarios.rs (lib.rs: one scenario per guarantee), or the same scenario on the other store; they share world setup, not assertions."
-    },
-    {
-      "suite": "rust",
-      "test": "factum-conformance::memory::a_refused_recurring_command_runs_once_per_period",
-      "hash": "aa5614ead03fd4e5",
-      "reason": "Its same-shape group is not two tests that differ by literals: it is one scenario of scenarios.rs instantiated by suite! once per store (factum-conformance::memory, factum-sqlite::conformance), one body and no literal to tabulate. A table over stores would need one crate to depend on both stores, would run the same body per store (no CPU saved, so test_seconds could not fall), and would hide which store broke; every scenario runs on every store (CLAUDE.md). Its other_test is another guarantee with its own home in scenarios.rs (lib.rs: one scenario per guarantee), or the same scenario on the other store; they share world setup, not assertions."
-    },
-    {
-      "suite": "rust",
       "test": "factum-conformance::memory::a_refusal_that_loses_its_key_answers_what_the_key_holds",
       "hash": "95a5a57d43dcdd9c",
-      "reason": "Its same-shape group is not two tests that differ by literals: it is one scenario of scenarios.rs instantiated by suite! once per store (factum-conformance::memory, factum-sqlite::conformance), one body and no literal to tabulate. A table over stores would need one crate to depend on both stores, would run the same body per store (no CPU saved, so test_seconds could not fall), and would hide which store broke; every scenario runs on every store (CLAUDE.md). Its other_test is another guarantee with its own home in scenarios.rs (lib.rs: one scenario per guarantee), or the same scenario on the other store; they share world setup, not assertions."
-    },
-    {
-      "suite": "rust",
-      "test": "factum-conformance::memory::an_answer_with_no_events_keeps_nothing_and_a_resend_decides_again",
-      "hash": "328c067214cee72c",
       "reason": "Its same-shape group is not two tests that differ by literals: it is one scenario of scenarios.rs instantiated by suite! once per store (factum-conformance::memory, factum-sqlite::conformance), one body and no literal to tabulate. A table over stores would need one crate to depend on both stores, would run the same body per store (no CPU saved, so test_seconds could not fall), and would hide which store broke; every scenario runs on every store (CLAUDE.md). Its other_test is another guarantee with its own home in scenarios.rs (lib.rs: one scenario per guarantee), or the same scenario on the other store; they share world setup, not assertions."
     },
     {
@@ -836,7 +776,7 @@
   "measured": {
     "rust": {
       "uncovered_lines": 125,
-      "test_seconds": 11.075
+      "test_seconds": 10.779
     }
   }
 }
