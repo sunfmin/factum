@@ -1,8 +1,8 @@
 //! The SQLite store, held to the conformance suite: each scenario on its own
 //! database file, each runner on its own connection to it. Each file starts
-//! as factum before #14 wrote it, a schema copied from that release, never
-//! derived from the code here; the tests below hold such a database, once
-//! opened, to the shape of a new one.
+//! as factum wrote it before `work.taken_over`, a schema copied from that
+//! release, never derived from the code here; the tests below hold such a
+//! database, once opened, to the shape of a new one.
 
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
@@ -16,7 +16,7 @@ use factum_store::{Answer, AnswerResult};
 use rusqlite::Connection;
 use serde_json::json;
 
-/// The schema before factum#14, as released.
+/// The schema before the `work.taken_over` column, as released.
 const BEFORE_14: &str = "
 PRAGMA journal_mode = WAL;
 CREATE TABLE IF NOT EXISTS events (
@@ -155,7 +155,7 @@ fn a_database_with_kept_refusals_keeps_none_once_opened() {
         "INSERT INTO answers (key, answer) VALUES ('r', '{refused}'), ('a', '{applied}');"
     ));
     drop(SqliteStore::open(&path).unwrap());
-    // factum#43: nothing is kept per key beside the log.
+    // Nothing is kept per key beside the log: no answers table.
     assert!(!has_answers(&path));
 }
 
@@ -269,8 +269,8 @@ async fn copies_answer_the_same_once_opened(version: u32) {
     let opened = SqliteStore::open(w.store.path()).unwrap();
     for (key, copy) in &copies {
         let answer = opened.answer(*key).await.unwrap();
-        // factum#41/#43: one that wrote no events, or a refusal, is no
-        // longer kept: its key has no answer.
+        // One that wrote no events, or a refusal, is no longer kept: its
+        // key has no answer.
         let wrote = matches!(&copy.result, AnswerResult::Applied(e) if !e.is_empty());
         assert_eq!(answer.as_ref(), wrote.then_some(copy), "{key}");
     }
@@ -311,8 +311,9 @@ fn pages(path: &Path) -> (i64, i64, i64) {
     (get("auto_vacuum"), get("page_count"), get("freelist_count"))
 }
 
-/// factum#44: a file written before it is made incremental once, at open,
-/// by the one VACUUM that takes, which leaves none of a step's deletes.
+/// A file written before incremental auto_vacuum (ADR 0013) is made
+/// incremental once, at open, by the one VACUUM that takes, which leaves
+/// none of a step's deletes.
 #[test]
 fn a_file_written_before_44_is_vacuumed_once_at_open() {
     let path = old_database(MANY_ANSWERS);
@@ -324,8 +325,8 @@ fn a_file_written_before_44_is_vacuumed_once_at_open() {
     assert!(after < 100, "{after} pages left of {before}");
 }
 
-/// factum#44: what a schema step deletes in an incremental file is given
-/// back in steps, one after a write, while the writes go on.
+/// What a schema step deletes in an incremental file is given back in
+/// steps, one after a write, while the writes go on (ADR 0013).
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn pages_a_step_frees_are_given_back_while_writes_go_on() {
     let w = World::new(&Sqlite);
