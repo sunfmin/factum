@@ -220,6 +220,7 @@ macro_rules! suite {
             a_dead_letter_retried_with_fixed_code_is_projected,
             a_stopped_projection_goes_on_once_its_dead_letter_is_retried,
             a_dead_letter_another_version_left_is_not_retried,
+            a_dead_letter_whose_event_is_lost_is_a_fault,
             a_sample_holds_a_new_next_to_old_progress,
             runners_in_parallel_do_each_thing_once,
             writers_in_parallel_keep_versions_unique,

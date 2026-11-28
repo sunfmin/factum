@@ -70,6 +70,7 @@ pub struct Flaky<S> {
     race: Mutex<Option<(Matches, BoxFuture<()>)>>,
     lose: Mutex<Option<Matches>>,
     batch_race: Mutex<Option<(String, BoxFuture<()>)>>,
+    lost: Mutex<bool>,
     pause: Option<Pause>,
 }
 
@@ -83,6 +84,7 @@ impl<S: Store> Flaky<S> {
             race: Mutex::new(None),
             lose: Mutex::new(None),
             batch_race: Mutex::new(None),
+            lost: Mutex::new(false),
             pause: None,
         }
     }
@@ -107,6 +109,12 @@ impl<S: Store> Flaky<S> {
     /// completion, as another projector that got there first.
     pub fn race_on_batch(&self, projection: &str, writer: BoxFuture<()>) {
         *self.batch_race.lock().unwrap() = Some((projection.to_string(), writer));
+    }
+
+    /// From now on, every stream reads as holding no events, as if the
+    /// store had lost them: a store that broke its contract.
+    pub fn lose_events(&self) {
+        *self.lost.lock().unwrap() = true;
     }
 
     /// The next call of `call` fails with `call.error()`, doing nothing.
@@ -215,6 +223,9 @@ pub fn short(id: Uuid) -> String {
 impl<S: Store> Store for Flaky<S> {
     async fn read_stream(&self, stream: &StreamId, after: Version) -> Result<Vec<Event>> {
         self.cue(Call::ReadStream)?;
+        if *self.lost.lock().unwrap() {
+            return Ok(Vec::new());
+        }
         self.inner.read_stream(stream, after).await
     }
     async fn answer(&self, key: Uuid) -> Result<Option<Answer>> {

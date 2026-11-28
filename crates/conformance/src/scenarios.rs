@@ -2512,6 +2512,35 @@ pub async fn a_dead_letter_another_version_left_is_not_retried<B: Backend>(b: &B
     );
 }
 
+pub async fn a_dead_letter_whose_event_is_lost_is_a_fault<B: Backend>(b: &B) {
+    let w = World::with_orders(
+        b,
+        OrderList {
+            fails_on: Some(13),
+            ..OrderList::default()
+        },
+    );
+    let e = w.engine("a");
+    let bad = place(&e, 13).await;
+    e.settle().await.unwrap();
+    let dead = e.dead_letters("orders").await.unwrap()[0].event;
+
+    let (fixed, store) = w.flaky_with(w.shop(OrderList::default()), "fixed");
+    store.lose_events();
+    match fixed.retry_dead_letter("orders", dead).await {
+        Err(Error::Fault(why)) => {
+            assert!(why.contains(&bad.to_string()), "names the stream: {why}");
+            assert!(why.contains("Version(1)"), "names the version: {why}");
+        }
+        other => panic!("expected a fault, got {other:?}"),
+    }
+    assert_eq!(
+        fixed.dead_letters("orders").await.unwrap().len(),
+        1,
+        "the dead letter stays"
+    );
+}
+
 // ---- process samples ----
 
 pub async fn a_sample_holds_a_new_next_to_old_progress<B: Backend>(b: &B) {
