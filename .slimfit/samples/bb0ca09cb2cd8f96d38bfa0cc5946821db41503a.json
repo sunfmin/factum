@@ -1,0 +1,29 @@
+{
+  "tip": "bb0ca09cb2cd8f96d38bfa0cc5946821db41503a",
+  "from": "a222027f82681f0ce172feb7bed69c6dcf464337",
+  "pool": 228,
+  "drawn": {
+    "rust": [
+      {
+        "name": "crates/sealed/src/file.rs:235:9: replace Sealed::record -> Result<Vec<u8>> with Ok(vec![])",
+        "outcome": "killed"
+      },
+      {
+        "name": "crates/sealed/src/file.rs:177:9: replace Sealed::attach -> Result<()> with Ok(())",
+        "outcome": "killed"
+      },
+      {
+        "name": "crates/sealed/src/file.rs:37:51: replace + with -",
+        "outcome": "killed"
+      },
+      {
+        "name": "crates/sealed/src/file.rs:227:9: replace Sealed::seal -> Result<Vec<u8>> with Ok(vec![1])",
+        "outcome": "killed"
+      },
+      {
+        "name": "crates/sealed/src/file.rs:168:9: replace Sealed::at_path -> Result<bool> with Ok(true)",
+        "outcome": "killed"
+      }
+    ]
+  }
+}
