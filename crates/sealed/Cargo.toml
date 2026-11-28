@@ -22,6 +22,10 @@ factum.workspace = true
 factum-conformance.workspace = true
 tokio = { workspace = true, features = ["rt", "macros"] }
 
+# The tests walk the process heap for what Windows allocated (HeapWalk).
+[target.'cfg(windows)'.dev-dependencies]
+windows-sys = { version = "0.61.2", features = ["Win32_System_Memory"] }
+
 # The workspace's lints, but `unsafe_code` denied rather than forbidden:
 # the Windows calls that make a file owner-only (`src/access.rs`) are
 # unsafe, allowed in that one module (ADR 0021).

@@ -1,0 +1,22 @@
+name: windows
+# factum-sealed's Windows-only code (crates/sealed/src/access.rs, module
+# `windows`, ADR 0021) is compiled out on the hosts the gate runs on: this
+# runs factum-sealed's tests, its `_on_windows` ones among them, on
+# x86_64-pc-windows-msvc whenever what they build from changes.
+# No mutants here: they run only on a change, picked by a second agent.
+on:
+  push:
+    paths:
+      - crates/**
+      - "!crates/sqlite/**"
+      - Cargo.lock
+      - .github/workflows/windows.yml
+  workflow_dispatch:
+jobs:
+  sealed:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - run: cargo test -p factum-sealed
