@@ -30,12 +30,12 @@ Budget: 2,500 lines (ADR 0016). No new glossary words.
 
 ## Evidence
 
-`cargo run --release -p factum-sealed --example measure`, Apple M5 Max,
-SSD, 2026-11-27, two runs, events of about 440 bytes: a commit of one
-event on 10,000, median of 100, 3.1-3.9 ms (a `sync_data`); an open of
-that file (4.6 MB), median of 10, 16.7 ms; the write that compacted 9.1 MB,
-29-37 ms; then 4,548,100 bytes on disk for 4,437,685 held (as JSON), 2.5%
-over.
+The measure example, M5 Max, SSD, two runs, medians of 100 (10
+for opens). 2026-11-27, ~440-byte events: a one-event commit on 10,000,
+3.1-3.9 ms; an open of that 4.6 MB file, 16.7 ms; the write compacting
+9.1 MB, 29-37 ms; the file 2.5% over its JSON. 2026-11-28: one table's
+1,000 rows of 100,000 in 100 tables, 39-79 µs by key range (703-720 µs
+scanning all).
 
 ## Considered
 

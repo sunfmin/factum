@@ -89,7 +89,7 @@ pub struct State {
     paces: HashMap<(String, String), Instant>,
     pub snapshots: HashMap<StreamId, Snapshot>,
     pub projections: HashMap<String, Built>,
-    pub rows: BTreeMap<(String, String, String), Value>,
+    pub rows: factum_store::Rows,
     pub dead: HashMap<String, Vec<DeadLetter>>,
     /// The bytes of the op each live slot was last set by.
     live: HashMap<Slot, usize>,
@@ -116,15 +116,13 @@ impl State {
                 return;
             }
             Op::Reset { projection } => {
-                self.rows.retain(|(p, _, _), _| *p != projection);
-                self.dead.remove(&projection);
-                let gone: Vec<Slot> = (self.live.keys())
-                    .filter(|s| matches!(s, Slot::Row(p, _, _) | Slot::Dead(p) if *p == projection))
-                    .cloned()
-                    .collect();
-                for s in gone {
-                    self.unset(&s);
+                // A row's slot is live exactly while the row is held, so
+                // the rows dropped name every live row slot of the projection.
+                for (p, t, k) in factum_store::drop_rows(&mut self.rows, &projection) {
+                    self.unset(&Slot::Row(p, t, k));
                 }
+                self.dead.remove(&projection);
+                self.unset(&Slot::Dead(projection));
                 return;
             }
             Op::Work { kind, id, row } => {

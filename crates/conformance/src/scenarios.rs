@@ -2290,6 +2290,59 @@ pub async fn every_store_refuses_rows_of_an_undeclared_table<B: Backend>(b: &B) 
     );
 }
 
+/// A table's rows are its own, and dropping a projection's rows drops no
+/// other's, though one name is the start of another (`t` and `t2`, `p` and
+/// `p2`).
+pub async fn rows_stay_apart_under_names_that_prefix_each_other<B: Backend>(b: &B) {
+    let w = World::new(b);
+    let store = &w.store;
+    let names = ["p", "p2"];
+    let tables = ["t", "t2"];
+    let declared: Vec<factum::Table> = tables.iter().map(|t| factum::Table::new(t, &[])).collect();
+    let put = |p: &str, t: &str, k: &str| factum::RowOp::Put {
+        table: t.into(),
+        key: k.into(),
+        row: json!({ "at": format!("{p}/{t}/{k}") }),
+    };
+    let fill = |p: &'static str| Batch {
+        projection: p.into(),
+        version: 1,
+        from: Default::default(),
+        to: Default::default(),
+        ops: (tables.iter())
+            .flat_map(|t| ["b", "a", "a2"].map(|k| put(p, t, k)))
+            .collect(),
+        dead: Vec::new(),
+        resolved: Vec::new(),
+        stop: false,
+    };
+    for p in names {
+        store.reset_projection(p, 1, "", &declared).await.unwrap();
+        store.apply_projection(fill(p)).await.unwrap();
+    }
+    let want = |p: &str, t: &str| -> Vec<(String, Value)> {
+        ["a", "a2", "b"]
+            .map(|k| (k.to_string(), json!({ "at": format!("{p}/{t}/{k}") })))
+            .to_vec()
+    };
+    for p in names {
+        for t in tables {
+            assert_eq!(store.rows(p, t).await.unwrap(), want(p, t), "{p}/{t}");
+            let all = Query::table(t);
+            assert_eq!(store.query(p, &all).await.unwrap(), want(p, t), "{p}/{t}");
+        }
+    }
+
+    store.reset_projection("p", 2, "", &declared).await.unwrap();
+    let again = b.reopen(store);
+    for s in [store, &again] {
+        for t in tables {
+            assert_eq!(s.rows("p", t).await.unwrap(), Vec::new(), "p/{t} dropped");
+            assert_eq!(s.rows("p2", t).await.unwrap(), want("p2", t), "p2/{t} kept");
+        }
+    }
+}
+
 /// Each refusal's message names what was refused, for whoever calls the
 /// store and prints its error.
 pub async fn every_store_says_what_it_refused<B: Backend>(b: &B) {
