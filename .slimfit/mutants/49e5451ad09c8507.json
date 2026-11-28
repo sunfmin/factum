@@ -1,0 +1,40 @@
+{
+  "tree": "c0d830a9a432a728401fae26d01e248630c28953+d1fba762150c532c",
+  "picker": "codex:01a21f95-6f5b-7451-833f-b602480e09ab:default",
+  "author": "claude-code:ab02e41c-f4e0-51d9-b4dd-81a5960bccb9:opus",
+  "picks": {
+    "rust": [
+      {
+        "name": "crates/sealed/src/access.rs:56:13: replace windows::<impl Drop for Local>::drop with ()",
+        "why": "The ACL assertions can pass while every open leaks the buffers allocated by Windows.",
+        "outcome": "survived",
+        "first_outcome": "survived"
+      },
+      {
+        "name": "crates/sealed/src/access.rs:48:58: replace | with &",
+        "why": "This drops WRITE_DAC along with the requested read and write access, a handle-opening regression exercised only on Windows.",
+        "outcome": "survived",
+        "first_outcome": "survived"
+      },
+      {
+        "name": "crates/sealed/src/access.rs:63:9: replace windows::restrict -> Result<(), String> with Ok(())",
+        "why": "A successful open could silently leave a previously widened ACL in place.",
+        "outcome": "survived",
+        "first_outcome": "survived"
+      },
+      {
+        "name": "crates/sealed/src/access.rs:112:43: replace | with & in windows::restrict",
+        "why": "The Windows call loses both flags that request DACL replacement and protection from inheritance.",
+        "outcome": "survived",
+        "first_outcome": "survived"
+      },
+      {
+        "name": "crates/sealed/src/access.rs:133:65: replace != with == in windows::sid_string",
+        "why": "The reversed terminator check produces an empty owner SID on a normal Windows open.",
+        "outcome": "survived",
+        "first_outcome": "survived"
+      }
+    ]
+  },
+  "added_lines": 112
+}

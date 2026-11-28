@@ -1,0 +1,10 @@
+{
+  "tree": "c0d830a9a432a728401fae26d01e248630c28953+d1fba762150c532c",
+  "lines": 100,
+  "serves": "factum#88",
+  "considered": "opcore's src/private.rs (reused its Windows calls, kept here since factum cannot depend on opcore); the Unix branch of owner_only (shares one open path now); a duplicate Windows dev-dependency (dropped)",
+  "reviewer": "codex:01a21f97-2e6d-7413-89b0-dcf53c7b59e1:default",
+  "author": "claude-code:ab02e41c-f4e0-51d9-b4dd-81a5960bccb9:opus",
+  "cut": "In crates/sealed/src/access.rs, configure OpenOptions per platform, then share the open and return around the platform-specific permission updates. In crates/sealed/Cargo.toml, drop the duplicate Windows dev-dependency because tests already get windows-sys and its features from the regular dependency. In crates/sealed/tests/conformance.rs, share the Unix and Windows create, widen, reopen, and compact test flow, keeping the permission reads, writes, and assertions platform-specific.",
+  "answer": "made the first two cuts; the test flow is not shared because the issue asks the Unix test unchanged, and test lines are not source growth"
+}

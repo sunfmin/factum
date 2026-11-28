@@ -23,6 +23,7 @@ use chacha20poly1305::{Key, XChaCha20Poly1305, XNonce};
 use factum_store::{Result, StoreError};
 use serde_json::value::RawValue;
 
+use crate::access::owner_only;
 use crate::state::{Op, State};
 
 const MAGIC: &[u8; 8] = b"factumSL";
@@ -383,20 +384,4 @@ fn sibling(path: &Path, suffix: &str) -> PathBuf {
 fn open_file(path: &Path) -> Result<File> {
     owner_only(path, OpenOptions::new().read(true).write(true))
         .map_err(|e| StoreError::Backend(format!("{}: {e}", path.display())))
-}
-
-/// Opens `path` with `options`, creating it if missing: owner-only (0600
-/// on Unix), whatever mode it was left with.
-/// On Windows it keeps the access it inherits.
-fn owner_only(path: &Path, options: &mut OpenOptions) -> std::io::Result<File> {
-    options.create(true);
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::{OpenOptionsExt, PermissionsExt};
-        let file = options.mode(0o600).open(path)?;
-        file.set_permissions(std::fs::Permissions::from_mode(0o600))?;
-        Ok(file)
-    }
-    #[cfg(not(unix))]
-    options.open(path)
 }

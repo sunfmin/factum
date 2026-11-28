@@ -385,3 +385,153 @@ async fn its_files_are_owner_only_made_tightened_and_compacted() {
     }
     assert_eq!(modes(&path), want, "compacted");
 }
+
+/// The access list of each file in `path`'s directory named after it, as
+/// SDDL, with the file owner's SID in its first entry written `OWNER`.
+#[cfg(windows)]
+#[allow(unsafe_code)]
+fn acls(path: &std::path::Path) -> Vec<(String, String)> {
+    use std::os::windows::ffi::OsStrExt;
+    use std::ptr::null_mut;
+    use windows_sys::Win32::Foundation::LocalFree;
+    use windows_sys::Win32::Security::Authorization::{
+        ConvertSecurityDescriptorToStringSecurityDescriptorW, GetNamedSecurityInfoW,
+        SDDL_REVISION_1, SE_FILE_OBJECT,
+    };
+    use windows_sys::Win32::Security::{DACL_SECURITY_INFORMATION, OWNER_SECURITY_INFORMATION};
+    let name = path.file_name().unwrap().to_str().unwrap();
+    let mut acls: Vec<_> = std::fs::read_dir(path.parent().unwrap())
+        .unwrap()
+        .map(|e| e.unwrap())
+        .filter(|e| e.file_name().to_str().unwrap().starts_with(name))
+        .map(|e| {
+            let wide: Vec<u16> = e.path().as_os_str().encode_wide().chain([0]).collect();
+            let info = OWNER_SECURITY_INFORMATION | DACL_SECURITY_INFORMATION;
+            let (mut sd, mut text, mut len) = (null_mut(), null_mut(), 0);
+            // SAFETY: a NUL-terminated path; the out pointers are written by the calls,
+            // and what they allocate is freed once below.
+            let sddl = unsafe {
+                let status = GetNamedSecurityInfoW(
+                    wide.as_ptr(),
+                    SE_FILE_OBJECT,
+                    info,
+                    null_mut(),
+                    null_mut(),
+                    null_mut(),
+                    null_mut(),
+                    &mut sd,
+                );
+                assert_eq!(status, 0, "GetNamedSecurityInfoW");
+                let ok = ConvertSecurityDescriptorToStringSecurityDescriptorW(
+                    sd,
+                    SDDL_REVISION_1,
+                    info,
+                    &mut text,
+                    &mut len,
+                );
+                assert_ne!(
+                    ok, 0,
+                    "ConvertSecurityDescriptorToStringSecurityDescriptorW"
+                );
+                let s = String::from_utf16_lossy(std::slice::from_raw_parts(text, len as usize));
+                LocalFree(text.cast());
+                LocalFree(sd);
+                s
+            };
+            // `O:<owner>D:<flags>(<ace>)...`; of the flags only P (protected) is kept.
+            let sddl = sddl.trim_end_matches('\0');
+            let (owner, dacl) = sddl.strip_prefix("O:").unwrap().split_once("D:").unwrap();
+            let (flags, aces) = dacl.split_at(dacl.find('(').unwrap_or(dacl.len()));
+            let protected = if flags.contains('P') { "P" } else { "" };
+            let aces = aces.replacen(&format!(";{owner})"), ";OWNER)", 1);
+            (
+                e.file_name().into_string().unwrap(),
+                format!("{protected}{aces}"),
+            )
+        })
+        .collect();
+    acls.sort();
+    acls
+}
+
+/// Sets `file`'s access list to one inherited and open to everyone.
+#[cfg(windows)]
+#[allow(unsafe_code)]
+fn widen(file: &std::path::Path) {
+    use std::os::windows::ffi::OsStrExt;
+    use std::ptr::null_mut;
+    use windows_sys::Win32::Foundation::LocalFree;
+    use windows_sys::Win32::Security::Authorization::{
+        ConvertStringSecurityDescriptorToSecurityDescriptorW, SDDL_REVISION_1, SE_FILE_OBJECT,
+        SetNamedSecurityInfoW,
+    };
+    use windows_sys::Win32::Security::{
+        DACL_SECURITY_INFORMATION, GetSecurityDescriptorDacl, UNPROTECTED_DACL_SECURITY_INFORMATION,
+    };
+    let wide: Vec<u16> = file.as_os_str().encode_wide().chain([0]).collect();
+    let sddl: Vec<u16> = "D:(A;;FA;;;WD)".encode_utf16().chain([0]).collect();
+    let (mut sd, mut present, mut defaulted, mut dacl) = (null_mut(), 0, 0, null_mut());
+    // SAFETY: NUL-terminated wide strings; the out pointers are written by the
+    // calls, and the descriptor they allocate is freed once below.
+    unsafe {
+        let ok = ConvertStringSecurityDescriptorToSecurityDescriptorW(
+            sddl.as_ptr(),
+            SDDL_REVISION_1,
+            &mut sd,
+            null_mut(),
+        );
+        assert_ne!(
+            ok, 0,
+            "ConvertStringSecurityDescriptorToSecurityDescriptorW"
+        );
+        assert_ne!(
+            GetSecurityDescriptorDacl(sd, &mut present, &mut dacl, &mut defaulted),
+            0
+        );
+        let status = SetNamedSecurityInfoW(
+            wide.as_ptr(),
+            SE_FILE_OBJECT,
+            DACL_SECURITY_INFORMATION | UNPROTECTED_DACL_SECURITY_INFORMATION,
+            null_mut(),
+            null_mut(),
+            dacl,
+            null_mut(),
+        );
+        assert_eq!(status, 0, "SetNamedSecurityInfoW");
+        LocalFree(sd);
+    }
+}
+
+#[cfg(windows)]
+#[tokio::test]
+async fn its_files_are_owner_only_made_tightened_and_compacted_on_windows() {
+    let path = new_path();
+    let name = path.file_name().unwrap().to_str().unwrap().to_string();
+    let acl = "P(A;;FA;;;OWNER)(A;;FA;;;SY)(A;;FA;;;BA)".to_string();
+    let want = vec![(name.clone(), acl.clone()), (format!("{name}.lock"), acl)];
+    let store = SealedStore::open(&path, KEY).unwrap();
+    let (id, lease) = claimed_row(&store).await;
+    assert_eq!(acls(&path), want, "made");
+    drop(store);
+    for (file, _) in &want {
+        widen(&path.with_file_name(file));
+        assert!(
+            acls(&path)
+                .iter()
+                .any(|(f, a)| f == file && !a.starts_with('P'))
+        );
+    }
+    let store = SealedStore::open(&path, KEY).unwrap();
+    assert_eq!(acls(&path), want, "tightened at open");
+    let mut last = 0;
+    for i in 1.. {
+        let renewed = store.renew(WorkKind::Task, id, lease, Instant(0), Instant(i));
+        assert!(renewed.await.unwrap());
+        let size = std::fs::metadata(&path).unwrap().len();
+        if size < last {
+            break;
+        }
+        last = size;
+    }
+    assert_eq!(acls(&path), want, "compacted");
+}
