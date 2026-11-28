@@ -5,28 +5,25 @@
 //! it and one left wider is tightened.
 
 use std::fs::{File, OpenOptions};
+#[cfg(unix)]
+use std::os::unix::fs::{OpenOptionsExt, PermissionsExt};
+#[cfg(windows)]
+use std::os::windows::fs::OpenOptionsExt;
 use std::path::Path;
 
 /// Opens `path` with `options`, creating it if missing, owner-only whatever
 /// access it was left with.
 pub(crate) fn owner_only(path: &Path, options: &mut OpenOptions) -> std::io::Result<File> {
-    options.create(true);
     #[cfg(unix)]
-    {
-        use std::os::unix::fs::{OpenOptionsExt, PermissionsExt};
-        let file = options.mode(0o600).open(path)?;
-        file.set_permissions(std::fs::Permissions::from_mode(0o600))?;
-        Ok(file)
-    }
+    options.mode(0o600);
     #[cfg(windows)]
-    {
-        use std::os::windows::fs::OpenOptionsExt;
-        let file = options.access_mode(windows::ACCESS).open(path)?;
-        windows::restrict(&file).map_err(std::io::Error::other)?;
-        Ok(file)
-    }
-    #[cfg(not(any(unix, windows)))]
-    options.open(path)
+    options.access_mode(windows::ACCESS);
+    let file = options.create(true).open(path)?;
+    #[cfg(unix)]
+    file.set_permissions(std::fs::Permissions::from_mode(0o600))?;
+    #[cfg(windows)]
+    windows::restrict(&file).map_err(std::io::Error::other)?;
+    Ok(file)
 }
 
 #[cfg(windows)]
