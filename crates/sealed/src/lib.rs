@@ -307,12 +307,7 @@ impl Store for SealedStore {
     }
 
     async fn rows(&self, projection: &str, table: &str) -> Result<Vec<(String, Value)>> {
-        self.read(|s| {
-            (s.rows.iter())
-                .filter(|((p, t, _), _)| p == projection && t == table)
-                .map(|((_, _, k), v)| (k.clone(), v.clone()))
-                .collect()
-        })
+        self.read(|s| factum_store::table_rows(&s.rows, projection, table))
     }
 
     async fn row(&self, projection: &str, table: &str, key: &str) -> Result<Option<Value>> {

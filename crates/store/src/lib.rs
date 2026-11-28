@@ -3,6 +3,7 @@
 //! and proved by `factum-conformance`, which runs the same scenarios through
 //! the engine on every store.
 
+use std::collections::BTreeMap;
 use std::future::Future;
 
 use factum_core::{
@@ -379,6 +380,33 @@ pub fn op_target(op: &RowOp) -> (&str, &str) {
         | RowOp::Merge { table, key, .. }
         | RowOp::Delete { table, key } => (table, key),
     }
+}
+
+/// Projection rows as an in-process store keeps them: by projection, then
+/// table, then key, so one table's rows, and one projection's, are a range.
+pub type Rows = BTreeMap<(String, String, String), Value>;
+
+/// The rows of one table, by key, visiting only that table's.
+pub fn table_rows(rows: &Rows, projection: &str, table: &str) -> Vec<(String, Value)> {
+    let from = (projection.to_string(), table.to_string(), String::new());
+    (rows.range(from..))
+        .take_while(|((p, t, _), _)| p == projection && t == table)
+        .map(|((_, _, k), v)| (k.clone(), v.clone()))
+        .collect()
+}
+
+/// Removes the projection's rows, visiting only those, and answers their
+/// keys.
+pub fn drop_rows(rows: &mut Rows, projection: &str) -> Vec<(String, String, String)> {
+    let from = (projection.to_string(), String::new(), String::new());
+    let gone: Vec<_> = (rows.range(from..).map(|(k, _)| k))
+        .take_while(|(p, _, _)| p == projection)
+        .cloned()
+        .collect();
+    for k in &gone {
+        rows.remove(k);
+    }
+    gone
 }
 
 /// Takes a row for a claim, the way every store must: a new lease for the

@@ -4,17 +4,18 @@
 //! A file of 10,000 events; the median of 100 commits of one event each on
 //! it; the median of 10 opens of it; then one work row renewed until a write
 //! compacts the file, that write's time, and the file's size against the
-//! bytes of what it holds.
+//! bytes of what it holds. Last, 100 tables of 1,000 rows each, and the
+//! median of 100 reads of one table's rows.
 
 use std::time::{Duration, Instant as Clock};
 
-use factum_core::{Instant, Position, StreamId, Uuid, Version, WorkKind};
+use factum_core::{Instant, Position, RowOp, StreamId, Table, Uuid, Version, WorkKind};
 use factum_sealed::SealedStore;
 
 #[path = "../tests/drive/mod.rs"]
 mod drive;
 use drive::{KEY, claimed_row, event};
-use factum_store::{Append, Store, Unit};
+use factum_store::{Append, Batch, Store, Unit};
 use serde_json::json;
 
 /// Appends `n` events to a new stream, in one commit.
@@ -111,9 +112,50 @@ async fn main() {
         log.len(),
         size(&path)
     );
+
+    rows(&store).await;
     drop(store);
     std::fs::remove_file(&path).unwrap();
     let mut lock = path.into_os_string();
     lock.push(".lock");
     std::fs::remove_file(lock).unwrap();
+}
+
+/// 100 tables of 1,000 rows each in one projection, then the median of 100
+/// reads of one table's rows.
+async fn rows(store: &SealedStore) {
+    let names: Vec<String> = (0..100).map(|t| format!("t{t}")).collect();
+    let tables: Vec<Table> = names.iter().map(|n| Table::new(n, &[])).collect();
+    store.reset_projection("p", 1, "", &tables).await.unwrap();
+    for name in &names {
+        let ops = (0..1000)
+            .map(|k| RowOp::Put {
+                table: name.clone(),
+                key: format!("{k:04}"),
+                row: json!({ "n": k }),
+            })
+            .collect();
+        let batch = Batch {
+            projection: "p".into(),
+            version: 1,
+            from: Position::default(),
+            to: Position::default(),
+            ops,
+            dead: Vec::new(),
+            resolved: Vec::new(),
+            stop: false,
+        };
+        store.apply_projection(batch).await.unwrap();
+    }
+    let mut reads = Vec::new();
+    for _ in 0..100 {
+        let t = Clock::now();
+        let rows = store.rows("p", "t50").await.unwrap();
+        reads.push(t.elapsed());
+        assert_eq!(rows.len(), 1000);
+    }
+    println!(
+        "rows of one table of 1,000 among 100,000 rows in 100 tables: median of 100 {:?}",
+        median(reads)
+    );
 }

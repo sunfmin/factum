@@ -45,7 +45,7 @@ struct Inner {
     checkpoints: HashMap<String, Checkpoint>,
     /// The tables each projection was last built with.
     tables: HashMap<String, Vec<String>>,
-    rows: BTreeMap<(String, String, String), Value>,
+    rows: crate::Rows,
     dead: Vec<DeadLetter>,
 }
 
@@ -283,7 +283,7 @@ impl Store for MemoryStore {
         tables: &[Table],
     ) -> Result<()> {
         let mut inner = self.lock();
-        inner.rows.retain(|(p, _, _), _| p != projection);
+        crate::drop_rows(&mut inner.rows, projection);
         let names = tables.iter().map(|t| t.name.clone()).collect();
         inner.tables.insert(projection.to_string(), names);
         inner.dead.retain(|d| d.projection != projection);
@@ -339,13 +339,7 @@ impl Store for MemoryStore {
     }
 
     async fn rows(&self, projection: &str, table: &str) -> Result<Vec<(String, Value)>> {
-        let inner = self.lock();
-        Ok(inner
-            .rows
-            .iter()
-            .filter(|((p, t, _), _)| p == projection && t == table)
-            .map(|((_, _, k), v)| (k.clone(), v.clone()))
-            .collect())
+        Ok(crate::table_rows(&self.lock().rows, projection, table))
     }
 
     async fn row(&self, projection: &str, table: &str, key: &str) -> Result<Option<Value>> {
