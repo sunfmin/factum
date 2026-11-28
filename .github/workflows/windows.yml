@@ -1,34 +1,22 @@
 name: windows
 # factum-sealed's Windows-only code (crates/sealed/src/access.rs, module
-# `windows`) is compiled out on the hosts the gate runs on: this runs its
-# tests and the mutants picked for it on x86_64-pc-windows-msvc (factum#89).
+# `windows`, ADR 0021) is compiled out on the hosts the gate runs on: this
+# runs factum-sealed's tests, its `_on_windows` ones among them, on
+# x86_64-pc-windows-msvc whenever what they build from changes.
+# No mutants here: they run only on a change, picked by a second agent.
 on:
   push:
-    branches: [windows-89]
+    paths:
+      - crates/**
+      - "!crates/sqlite/**"
+      - Cargo.lock
+      - .github/workflows/windows.yml
   workflow_dispatch:
 jobs:
   sealed:
     runs-on: windows-latest
-    defaults:
-      run:
-        shell: bash
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
-      - run: cargo test -p factum-sealed -- --nocapture
-      # slimfit does not build on Windows (it calls libc and std::os::unix),
-      # so the picks of .slimfit/mutants/49e5451ad09c8507.json run through
-      # cargo-mutants itself, the version slimfit drives on the owner's host.
-      - run: cargo install cargo-mutants --version 27.1.0 --locked
-      - name: picked mutants
-        run: |
-          cargo mutants --package factum-sealed --file crates/sealed/src/access.rs \
-            -F 'access\.rs:56:13: replace windows::<impl Drop for Local>::drop with \(\)$' \
-            -F 'access\.rs:48:58: replace \| with &$' \
-            -F 'access\.rs:63:9: replace windows::restrict -> Result<\(\), String> with Ok\(\(\)\)$' \
-            -F 'access\.rs:112:43: replace \| with & in windows::restrict$' \
-            -F 'access\.rs:133:65: replace != with == in windows::sid_string$'
-      - name: mutant outcomes
-        if: always()
-        run: for f in caught missed timeout unviable; do echo "== $f"; cat mutants.out/$f.txt 2>/dev/null; done
+      - run: cargo test -p factum-sealed
