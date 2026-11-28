@@ -1,0 +1,7 @@
+{
+  "tree": "ae0dd9c517fd2f2e2844515d2dbaa8fcdfc2d7a0+d1fba762150c532c",
+  "picker": "codex:01a21fbf-b65c-72d2-a39d-52e34011f7a3:default",
+  "author": "claude-code:84505937-9a4d-5822-aa16-b4de2c519808:opus",
+  "none": "The new conformance scenario checks exact nonempty reads across both table and projection boundaries, then verifies reset isolation before and after reopening, so every listed mutation should fail those checks or prevent setup.",
+  "added_lines": 29
+}
