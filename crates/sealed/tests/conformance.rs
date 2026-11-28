@@ -535,3 +535,81 @@ async fn its_files_are_owner_only_made_tightened_and_compacted_on_windows() {
     }
     assert_eq!(acls(&path), want, "compacted");
 }
+
+#[cfg(windows)]
+#[test]
+fn opening_its_files_leaves_nothing_windows_allocated_on_windows() {
+    let path = new_path();
+    drop(SealedStore::open(&path, KEY).unwrap());
+    let before = owner_sid_strings(&path);
+    for _ in 0..20 {
+        drop(SealedStore::open(&path, KEY).unwrap());
+    }
+    // 20 opens of 2 files each would leave 40; other tests opening at the
+    // same time may hold a few for a moment.
+    let after = owner_sid_strings(&path);
+    assert!(
+        after < before + 10,
+        "{before} owner SID strings, then {after}"
+    );
+}
+
+/// How many blocks of the process heap, where Windows allocates what its
+/// calls hand back, hold `path`'s owner SID as a string: the one factum-sealed
+/// asks for at each open and frees.
+#[cfg(windows)]
+#[allow(unsafe_code)]
+fn owner_sid_strings(path: &std::path::Path) -> usize {
+    use std::os::windows::ffi::OsStrExt;
+    use std::ptr::null_mut;
+    use windows_sys::Win32::Foundation::LocalFree;
+    use windows_sys::Win32::Security::Authorization::{
+        ConvertSidToStringSidW, GetNamedSecurityInfoW, SE_FILE_OBJECT,
+    };
+    use windows_sys::Win32::Security::OWNER_SECURITY_INFORMATION;
+    use windows_sys::Win32::System::Memory::{
+        GetProcessHeap, HeapLock, HeapUnlock, HeapWalk, PROCESS_HEAP_ENTRY,
+    };
+    const PROCESS_HEAP_ENTRY_BUSY: u16 = 4;
+    let wide: Vec<u16> = path.as_os_str().encode_wide().chain([0]).collect();
+    let (mut owner, mut sd, mut text) = (null_mut(), null_mut(), null_mut());
+    // SAFETY: a NUL-terminated path; the out pointers are written by the calls,
+    // what they allocate is freed once below, and the heap is read only
+    // between its lock and unlock, in blocks HeapWalk answers busy.
+    unsafe {
+        let status = GetNamedSecurityInfoW(
+            wide.as_ptr(),
+            SE_FILE_OBJECT,
+            OWNER_SECURITY_INFORMATION,
+            &mut owner,
+            null_mut(),
+            null_mut(),
+            null_mut(),
+            &mut sd,
+        );
+        assert_eq!(status, 0, "GetNamedSecurityInfoW");
+        assert_ne!(ConvertSidToStringSidW(owner, &mut text), 0);
+        let len = (0..).take_while(|&i| *text.add(i) != 0).count() + 1;
+        let want = std::slice::from_raw_parts(text.cast::<u8>(), len * 2).to_vec();
+        let heap = GetProcessHeap();
+        assert_ne!(HeapLock(heap), 0, "HeapLock");
+        let (mut entry, mut found) = (PROCESS_HEAP_ENTRY::default(), 0);
+        while HeapWalk(heap, &mut entry) != 0 {
+            if entry.wFlags & PROCESS_HEAP_ENTRY_BUSY != 0
+                && entry.cbData as usize >= want.len()
+                && std::slice::from_raw_parts(entry.lpData.cast::<u8>(), want.len()) == want
+            {
+                found += 1;
+            }
+        }
+        HeapUnlock(heap);
+        LocalFree(text.cast());
+        LocalFree(sd);
+        // The string just asked for is among them: the walk sees what Windows allocates.
+        assert!(
+            found >= 1,
+            "the owner SID string asked for is not in the heap"
+        );
+        found - 1
+    }
+}
