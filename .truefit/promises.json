@@ -164,6 +164,12 @@
     "sentence": "A call whose lease runs out (its runner died, or it outlived its timeout) is taken over and made again only while its attempts last: taken over after the last, it ends `Unknown`, as an at-most-once one does, since that attempt may have done the work; it ends `Failed` only when its last attempt answered an error.",
     "source": "SPEC.md:25"
   },
+  "956d74706d70": {
+    "kind": "fixed-often",
+    "mark": "not",
+    "summary": "crates/conformance/src/lib.rs was changed by 2 fixes in 180 days, and no registered promise's check covers it",
+    "why": "Both fixes only register a scenario in suite! (a_writer_that_loses_every_race_gives_up for SPEC §7's 1000-loss bound; a_result_whose_lease_ran_out_meanwhile_is_refused and a_wake_while_a_runner_holds_the_process_is_not_lost): the file is the suite's registry, and the promises those scenarios keep are test checks, whose code truefit cannot see"
+  },
   "957f8be38293": {
     "mark": "not",
     "sentence": "A log that is only appended to is the one home of what happened: every state, row and answer is derived from it, so none can say what it does not.",
