@@ -308,6 +308,6 @@ check = ["test"] # crates/sealed/tests/conformance.rs: compaction_keeps_every_ev
 
 [[promise]]
 name = "sealed-files-owner-only"
-says = "Every file it makes (the file, `<file>.lock`, `<file>.compacting`) is owner-only, 0600 on Unix, and one left wider is tightened when it is opened; on Windows each keeps the access it inherits."
+says = "Every file it makes (the file, `<file>.lock`, `<file>.compacting`) is owner-only from its open, and tightened if left wider: 0600 on Unix, on Windows a protected `D:P(A;;FA;;;<owner>)(A;;FA;;;SY)(A;;FA;;;BA)`."
 source = "docs/adr/0021-a-sealed-file-store-for-hosts-without-a-c-compiler.md:27"
-check = ["test"] # crates/sealed/tests/conformance.rs: its_files_are_owner_only_made_tightened_and_compacted
+check = ["test"] # crates/sealed/tests/conformance.rs: its_files_are_owner_only_made_tightened_and_compacted, and _on_windows

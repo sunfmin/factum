@@ -7,6 +7,7 @@
 //! file and see each other's commits. A file whose waste passes half of it
 //! is rewritten as what it holds.
 
+mod access;
 mod file;
 mod state;
 

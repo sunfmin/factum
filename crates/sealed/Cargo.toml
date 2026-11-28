@@ -14,10 +14,19 @@ chacha20poly1305 = { version = "0.10", default-features = false, features = ["al
 serde.workspace = true
 serde_json = { workspace = true, features = ["raw_value"] }
 
+[target.'cfg(windows)'.dependencies]
+windows-sys = { version = "0.61.2", features = ["Win32_Foundation", "Win32_Security", "Win32_Security_Authorization", "Win32_Storage_FileSystem"] }
+
 [dev-dependencies]
 factum.workspace = true
 factum-conformance.workspace = true
 tokio = { workspace = true, features = ["rt", "macros"] }
 
-[lints]
-workspace = true
+[target.'cfg(windows)'.dev-dependencies]
+windows-sys = { version = "0.61.2", features = ["Win32_Foundation", "Win32_Security", "Win32_Security_Authorization"] }
+
+# The workspace's lints, but `unsafe_code` denied rather than forbidden:
+# the Windows calls that make a file owner-only (`src/access.rs`) are
+# unsafe, allowed in that one module (ADR 0021).
+[lints.rust]
+unsafe_code = "deny"
