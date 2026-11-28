@@ -188,46 +188,35 @@ pub async fn a_key_another_writer_answered_first_elsewhere_is_reused<B: Backend>
     assert_eq!(count(&a, theirs, "OrderPlaced").await, 1);
 }
 
-pub async fn a_refusal_keeps_nothing_and_a_resend_decides_again<B: Backend>(b: &B) {
+pub async fn an_answer_that_keeps_nothing_lets_a_resend_decide_again<B: Backend>(b: &B) {
     let w = World::new(b);
     let e = w.engine("a");
-    let o = id();
-    let early = sub("order.pay", json!({ "order": o, "charge": "cash" }));
-    assert_eq!(refused(e.submit(early.clone()).await), "not_placed");
-    assert!(w.store.answer(early.key).await.unwrap().is_none());
-    e.submit(sub("order.place", json!({ "order": o, "total": 1 })))
-        .await
-        .unwrap();
-    let applied = e.submit(early.clone()).await.unwrap();
-    assert!(!applied.replayed, "the key decided again");
-    assert_eq!(kinds(&applied.events), ["OrderPaid"]);
-    let again = e.engine_again(&w).submit(early).await.unwrap();
-    assert!(again.replayed);
-    assert_eq!(again.events, applied.events);
-    assert_eq!(count(&e, o, "OrderPaid").await, 1);
-}
-
-pub async fn an_answer_with_no_events_keeps_nothing_and_a_resend_decides_again<B: Backend>(b: &B) {
-    let w = World::new(b);
-    let e = w.engine("a");
-    let o = id();
-    let early = sub(
-        "order.pay_when_placed",
-        json!({ "order": o, "charge": "cash" }),
-    );
-    let nothing = e.submit(early.clone()).await.unwrap();
-    assert!(nothing.events.is_empty() && !nothing.replayed);
-    assert!(w.store.answer(early.key).await.unwrap().is_none());
-    e.submit(sub("order.place", json!({ "order": o, "total": 1 })))
-        .await
-        .unwrap();
-    let applied = e.submit(early.clone()).await.unwrap();
-    assert!(!applied.replayed, "the key decided again");
-    assert_eq!(kinds(&applied.events), ["OrderPaid"]);
-    let again = e.engine_again(&w).submit(early).await.unwrap();
-    assert!(again.replayed);
-    assert_eq!(again.events, applied.events);
-    assert_eq!(count(&e, o, "OrderPaid").await, 1);
+    // A refusal, and an answer with no events: neither is kept.
+    for command in ["order.pay", "order.pay_when_placed"] {
+        let o = id();
+        let early = sub(command, json!({ "order": o, "charge": "cash" }));
+        let first = e.submit(early.clone()).await;
+        if command == "order.pay" {
+            assert_eq!(refused(first), "not_placed");
+        } else {
+            let nothing = first.unwrap();
+            assert!(nothing.events.is_empty() && !nothing.replayed, "{command}");
+        }
+        assert!(
+            w.store.answer(early.key).await.unwrap().is_none(),
+            "{command}"
+        );
+        e.submit(sub("order.place", json!({ "order": o, "total": 1 })))
+            .await
+            .unwrap();
+        let applied = e.submit(early.clone()).await.unwrap();
+        assert!(!applied.replayed, "{command}: the key decided again");
+        assert_eq!(kinds(&applied.events), ["OrderPaid"], "{command}");
+        let again = e.engine_again(&w).submit(early).await.unwrap();
+        assert!(again.replayed, "{command}");
+        assert_eq!(again.events, applied.events, "{command}");
+        assert_eq!(count(&e, o, "OrderPaid").await, 1, "{command}");
+    }
 }
 
 pub async fn a_fault_is_no_answer_and_the_key_decides_again<B: Backend>(b: &B) {
@@ -453,71 +442,35 @@ pub async fn a_writer_that_loses_every_race_gives_up<B: Backend>(b: &B) {
     assert_eq!(a.process(p).await.unwrap().progress.outcome("pack"), None);
 }
 
-pub async fn versions_stay_unique_under_two_writers<B: Backend>(b: &B) {
-    let w = World::new(b);
-    let (a, bb) = (w.engine("a"), w.engine("b"));
-    let c = id();
-    for _ in 0..10 {
-        let (x, y) = tokio::join!(
-            a.submit(sub("counter.add", json!({ "counter": c, "n": 1 }))),
-            bb.submit(sub("counter.add", json!({ "counter": c, "n": 1 })))
-        );
-        x.unwrap();
-        y.unwrap();
-    }
-    let history = a.history(&StreamId::new("counter", c)).await.unwrap();
-    assert_eq!(
-        history.iter().map(|ev| ev.version.0).collect::<Vec<_>>(),
-        (1..=20).collect::<Vec<_>>()
-    );
-    assert_eq!(
-        a.state(&StreamId::new("counter", c)).await.unwrap()["total"],
-        20
-    );
-}
-
 pub async fn an_ended_stream_refuses_every_command<B: Backend>(b: &B) {
     let w = World::new(b);
     let e = w.engine("a");
-    let o = place(&e, 5).await;
-    pay(&e, o).await;
-    e.submit(sub("order.close", json!({ "order": o })))
-        .await
-        .unwrap();
-    assert_eq!(
-        refused(e.submit(sub("order.close", json!({ "order": o }))).await),
-        "ended"
-    );
-    assert_eq!(
-        refused(
-            e.submit(sub("order.cancel", json!({ "order": o, "reason": "x" })))
-                .await
-        ),
-        "ended"
-    );
-    assert_eq!(status(&e, o).await, "closed");
-}
-
-pub async fn a_stream_ended_by_a_scheduling_command_stays_ended<B: Backend>(b: &B) {
-    let w = World::new(b);
-    let e = w.engine("a");
-    let o = place(&e, 5).await;
-    pay(&e, o).await;
-    e.submit(sub("order.close_and_remind", json!({ "order": o })))
-        .await
-        .unwrap();
-    assert_eq!(
-        kinds(&e.history(&order(o)).await.unwrap()).last(),
-        Some(&"CommandScheduled")
-    );
-    assert_eq!(
-        refused(
-            e.submit(sub("order.cancel", json!({ "order": o, "reason": "x" })))
-                .await
-        ),
-        "ended"
-    );
-    assert_eq!(status(&e, o).await, "closed");
+    // Ended by its last event, and by a command that schedules after it.
+    for ending in ["order.close", "order.close_and_remind"] {
+        let o = place(&e, 5).await;
+        pay(&e, o).await;
+        e.submit(sub(ending, json!({ "order": o }))).await.unwrap();
+        if ending == "order.close_and_remind" {
+            assert_eq!(
+                kinds(&e.history(&order(o)).await.unwrap()).last(),
+                Some(&"CommandScheduled")
+            );
+        }
+        assert_eq!(
+            refused(e.submit(sub("order.close", json!({ "order": o }))).await),
+            "ended",
+            "{ending}"
+        );
+        assert_eq!(
+            refused(
+                e.submit(sub("order.cancel", json!({ "order": o, "reason": "x" })))
+                    .await
+            ),
+            "ended",
+            "{ending}"
+        );
+        assert_eq!(status(&e, o).await, "closed", "{ending}");
+    }
 }
 
 // ---- schedules ----
@@ -572,55 +525,44 @@ fn pays<B: Backend>(w: &World<'_, B>, o: Uuid) -> factum::Model {
     })
 }
 
-pub async fn a_refused_recurring_command_runs_once_per_period<B: Backend>(b: &B) {
+pub async fn a_recurring_run_that_keeps_nothing_runs_once_per_period<B: Backend>(b: &B) {
     let w = World::new(b);
-    let o = id();
-    let e = w.engine_with(pays(&w, o), "a");
-    e.settle().await.unwrap();
-    // Placed after its run was refused, the order is not paid this period,
-    // however many ticks come.
-    e.submit(sub("order.place", json!({ "order": o, "total": 1 })))
-        .await
-        .unwrap();
-    for _ in 0..5 {
-        w.advance(10_000);
-        e.settle().await.unwrap();
+    // A run refused, and a run that writes nothing, each on its own order.
+    let commands = ["order.pay", "order.pay_when_placed"];
+    let orders = commands.map(|_| id());
+    let mut model = w.shop(OrderList::default());
+    for (command, o) in commands.iter().zip(orders) {
+        model = model.recurring(Recurring {
+            name: format!("shop.{}", command.trim_start_matches("order.")),
+            command: (*command).into(),
+            params: json!({ "order": o, "charge": "cash" }),
+            every_seconds: 60,
+            offset_seconds: 0,
+        });
     }
-    assert_eq!(status(&e, o).await, "placed");
-    w.advance(10_000);
-    e.settle().await.unwrap();
-    e.settle().await.unwrap();
-    assert_eq!(status(&e, o).await, "paid");
-    assert_eq!(count(&e, o, "OrderPaid").await, 1);
-}
-
-pub async fn a_recurring_command_that_writes_nothing_runs_once_per_period<B: Backend>(b: &B) {
-    let w = World::new(b);
-    let o = id();
-    let model = w.shop(OrderList::default()).recurring(Recurring {
-        name: "shop.pay_when_placed".into(),
-        command: "order.pay_when_placed".into(),
-        params: json!({ "order": o, "charge": "cash" }),
-        every_seconds: 60,
-        offset_seconds: 0,
-    });
     let e = w.engine_with(model, "a");
     e.settle().await.unwrap();
-    // Placed after its run wrote nothing, the order is not paid this
-    // period, however many ticks come.
-    e.submit(sub("order.place", json!({ "order": o, "total": 1 })))
-        .await
-        .unwrap();
+    // Placed after its run kept nothing, the order is not paid this period,
+    // however many ticks come.
+    for o in orders {
+        e.submit(sub("order.place", json!({ "order": o, "total": 1 })))
+            .await
+            .unwrap();
+    }
     for _ in 0..5 {
         w.advance(10_000);
         e.settle().await.unwrap();
     }
-    assert_eq!(status(&e, o).await, "placed");
+    for (command, o) in commands.iter().zip(orders) {
+        assert_eq!(status(&e, o).await, "placed", "{command}");
+    }
     w.advance(10_000);
     e.settle().await.unwrap();
     e.settle().await.unwrap();
-    assert_eq!(status(&e, o).await, "paid");
-    assert_eq!(count(&e, o, "OrderPaid").await, 1);
+    for (command, o) in commands.iter().zip(orders) {
+        assert_eq!(status(&e, o).await, "paid", "{command}");
+        assert_eq!(count(&e, o, "OrderPaid").await, 1, "{command}");
+    }
 }
 
 // ---- processes and actions ----

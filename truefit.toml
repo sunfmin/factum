@@ -68,7 +68,7 @@ kept = "the Store trait has no method that edits or removes an event: commit onl
 name = "ended-stream-refuses"
 says = "a stream whose last domain event ends it refuses every later command (`ended`)"
 source = "docs/adr/0002-events-are-facts-in-one-append-only-log.md:9"
-check = ["test"] # an_ended_stream_refuses_every_command, a_stream_ended_by_a_scheduling_command_stays_ended
+check = ["test"] # an_ended_stream_refuses_every_command
 
 [[promise]]
 name = "upcast-on-read"
