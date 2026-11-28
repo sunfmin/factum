@@ -1,0 +1,7 @@
+{
+  "tree": "2b8a24fb7e70d67bfbf34b302e0c1f11805aa23a+d1fba762150c532c",
+  "picker": "codex:01a21f8c-3a93-7150-a0ab-30156dd458f0:default",
+  "author": "claude-code:6d7fb301-8606-5b4a-84c3-cef378a1e464:opus",
+  "none": "Both File-returning mutants require a Default implementation that File lacks, and the compaction no-op is covered by the test that requires the file to shrink.",
+  "added_lines": 16
+}

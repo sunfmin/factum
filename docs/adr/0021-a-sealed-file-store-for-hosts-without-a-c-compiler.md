@@ -24,6 +24,8 @@ mandatory and a compaction replaces the data file. Under the lock a handle check
 **Size.** Waste is what no current op holds.
 When it is over half the file and over 64 KiB, the write that finds it rewrites the file under the lock as every event and the current state, under a new file id, to `<file>.compacting`, synced, then renamed over the file.
 
+**Mode.** Every file it makes (the file, `<file>.lock`, `<file>.compacting`) is owner-only, 0600 on Unix, and one left wider is tightened when it is opened; on Windows each keeps the access it inherits.
+
 Budget: 2,500 lines (ADR 0016). No new glossary words.
 
 ## Evidence
